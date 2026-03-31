@@ -317,9 +317,22 @@
     font-size: 0.9rem;
   }
 
+  .daily-date {
+    flex: 1;
+    text-align: left;
+  }
+
   .daily-temps {
     display: flex;
     flex-direction: column;
     gap: 0.15rem;
+    flex: 1;
+    align-items: center;
+    text-align: center;
+  }
+
+  .daily-pop {
+    flex: 1;
+    text-align: right;
   }
 </style>
