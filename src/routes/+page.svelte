@@ -41,6 +41,7 @@
     type HourlyForecast = {
       timeEpoch: number;
       label: string;
+      dateLabel: string;
       tempF: number;
       precipChancePct: number;
     };
@@ -64,6 +65,14 @@
 
     function formatHourLabel(timeEpochSeconds: number) {
       return new Date(timeEpochSeconds * 1000).toLocaleTimeString([], { hour: "numeric" });
+    }
+
+    function formatHourDateLabel(timeEpochSeconds: number) {
+      return new Date(timeEpochSeconds * 1000).toLocaleDateString([], {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+      });
     }
 
     function formatDayLabel(dateEpochSeconds: number) {
@@ -92,6 +101,7 @@
       hourly = allHours.slice(0, 72).map((h) => ({
         timeEpoch: h.time_epoch,
         label: formatHourLabel(h.time_epoch),
+        dateLabel: formatHourDateLabel(h.time_epoch),
         tempF: h.temp_f,
         precipChancePct: precipChanceFromRainSnow(h.chance_of_rain, h.chance_of_snow),
       }));
@@ -186,6 +196,9 @@
             <div class="hourly-time">
               {h.label}
             </div>
+            <div class="hourly-date">
+              {h.dateLabel}
+            </div>
             <div class="hourly-temp">
               {Math.round(h.tempF)} °F
             </div>
@@ -267,11 +280,24 @@
     background: #f8f8f8;
     font-size: 0.85rem;
     text-align: center;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
   }
 
   .hourly-time {
     font-weight: bold;
-    margin-bottom: 0.25rem;
+    margin-bottom: 0;
+  }
+
+  .hourly-date {
+    font-size: 0.72rem;
+    opacity: 0.7;
+    line-height: 1.1;
+  }
+
+  .hourly-pop {
+    margin-top: 0.15rem;
   }
 
   .daily-list {
