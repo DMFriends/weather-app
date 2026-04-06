@@ -2,7 +2,7 @@ import { PUBLIC_API_KEY } from '$env/static/public';
 
 export async function getWeather(city: string) {
   const res = await fetch(
-    `https://api.openweathermap.org/data/2.5/weather?q=${city}&units=metric&appid=${PUBLIC_API_KEY}`
+    `https://api.weatherapi.com/v1/forecast.json?key=${PUBLIC_API_KEY}&q=${city}&days=7&aqi=no&alerts=no`
   );
 
   if (!res.ok) {

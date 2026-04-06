@@ -94,11 +94,19 @@
       return json as WeatherApiResponse;
     }
 
+    function hourlySlotsFromNow(allHours: WeatherApiForecastHour[], nowSec: number) {
+      // Each API hour row covers [time_epoch, time_epoch + 1h); keep slots that still apply to now or the future.
+      return allHours.filter((h) => h.time_epoch + 3600 > nowSec);
+    }
+
     function buildHourlyAndDaily(resp: WeatherApiResponse) {
       const forecastDays = resp.forecast?.forecastday ?? [];
       const allHours = forecastDays.flatMap((d) => d.hour ?? []);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const relevantHours = hourlySlotsFromNow(allHours, nowSec);
+      const hoursForUi = relevantHours.length ? relevantHours : allHours;
 
-      hourly = allHours.slice(0, 72).map((h) => ({
+      hourly = hoursForUi.slice(0, 72).map((h) => ({
         timeEpoch: h.time_epoch,
         label: formatHourLabel(h.time_epoch),
         dateLabel: formatHourDateLabel(h.time_epoch),
