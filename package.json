@@ -8,14 +8,17 @@
 		"build": "vite build",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
+		"postinstall": "patch-package",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
 	},
 	"devDependencies": {
+		"@capacitor/assets": "^3.0.5",
 		"@sveltejs/adapter-auto": "^7.0.0",
 		"@sveltejs/adapter-static": "^3.0.10",
 		"@sveltejs/kit": "^2.50.2",
 		"@sveltejs/vite-plugin-svelte": "^6.2.4",
+		"patch-package": "^8.0.1",
 		"svelte": "^5.54.0",
 		"svelte-check": "^4.4.2",
 		"typescript": "^5.9.3",
@@ -25,6 +28,7 @@
 		"@capacitor/android": "^8.3.0",
 		"@capacitor/cli": "^8.3.0",
 		"@capacitor/core": "^8.3.0",
-		"@capacitor/geolocation": "^8.1.0"
+		"@capacitor/geolocation": "^8.1.0",
+		"@capacitor/local-notifications": "^8.0.2"
 	}
 }

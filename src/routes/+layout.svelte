@@ -1,12 +1,9 @@
 <script lang="ts">
-	import favicon from '$lib/assets/favicon.svg';
-
 	let { children } = $props();
 </script>
 
 <svelte:head>
-	<link rel="icon" href={favicon} />
-	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+	<link rel="icon" href="/favicon.png" />
 </svelte:head>
 
 <div class="app">
@@ -27,17 +24,6 @@
 		--radius: 18px;
 	}
 
-	@media (prefers-color-scheme: dark) {
-		:global(:root) {
-			--bg: #070b18;
-			--surface: rgba(255, 255, 255, 0.06);
-			--border: rgba(255, 255, 255, 0.12);
-			--text: rgba(255, 255, 255, 0.92);
-			--muted: rgba(255, 255, 255, 0.66);
-			--shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
-		}
-	}
-
 	:global(html, body) {
 		height: 100%;
 	}
@@ -45,6 +31,8 @@
 	:global(body) {
 		margin: 0;
 		color: var(--text);
+		-webkit-text-size-adjust: 100%;
+		text-size-adjust: 100%;
 		font-family:
 			ui-sans-serif,
 			system-ui,
@@ -73,16 +61,6 @@
 		filter: blur(2px);
 	}
 
-	@media (prefers-color-scheme: dark) {
-		:global(body)::before,
-		:global(body)::after {
-			background:
-				radial-gradient(42vmax 30vmax at 20% 15%, rgba(93, 160, 255, 0.22), transparent 68%),
-				radial-gradient(46vmax 32vmax at 85% 25%, rgba(0, 255, 209, 0.12), transparent 70%),
-				radial-gradient(56vmax 42vmax at 55% 85%, rgba(255, 155, 80, 0.08), transparent 72%);
-		}
-	}
-
 	:global(*) {
 		box-sizing: border-box;
 	}
@@ -101,7 +79,8 @@
 		border-radius: var(--radius);
 		box-shadow: var(--shadow);
 		padding: 16px;
-		overflow: hidden;
+		/* Allow popovers (e.g. city suggestions) to escape the card */
+		overflow: visible;
 	}
 
 	@media (min-width: 720px) {

@@ -1,6 +1,19 @@
 <script lang="ts">
     import { Geolocation } from "@capacitor/geolocation";
     import { PUBLIC_API_KEY } from "$env/static/public";
+    import { clearWeatherNotification, syncWeatherNotification } from "$lib/weatherNotification";
+    import { onDestroy, onMount } from "svelte";
+
+    function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
+      const R = 6371000;
+      const toRad = (d: number) => (d * Math.PI) / 180;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+      return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+    }
 
     type WeatherApiForecastHour = {
       time_epoch: number;
@@ -36,6 +49,16 @@
       forecast: {
         forecastday: WeatherApiForecastDay[];
       };
+    };
+
+    type WeatherApiCitySearchResult = {
+      id: number;
+      name: string;
+      region: string;
+      country: string;
+      lat: number;
+      lon: number;
+      url: string;
     };
 
     type HourlyForecast = {
@@ -94,6 +117,17 @@
       return json as WeatherApiResponse;
     }
 
+    async function fetchCitySuggestions(q: string) {
+      const res = await fetch(
+        `https://api.weatherapi.com/v1/search.json?key=${PUBLIC_API_KEY}&q=${encodeURIComponent(q)}`
+      );
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json?.error?.message || "API error");
+      }
+      return json as WeatherApiCitySearchResult[];
+    }
+
     function hourlySlotsFromNow(allHours: WeatherApiForecastHour[], nowSec: number) {
       // Each API hour row covers [time_epoch, time_epoch + 1h); keep slots that still apply to now or the future.
       return allHours.filter((h) => h.time_epoch + 3600 > nowSec);
@@ -144,43 +178,293 @@
     let hourly: HourlyForecast[] = $state([]);
     let daily: DailyForecast[] = $state([]);
     let currentPrecipChancePct: number | null = $state(null);
+    let loading = $state(false);
     let error = $state("");
+    let suggestions: WeatherApiCitySearchResult[] = $state([]);
+    let suggestionsOpen = $state(false);
+    let suggestionsLoading = $state(false);
+    let suggestionsError = $state("");
+    let highlightedSuggestionIdx: number = $state(-1);
 
-    async function fetchWeather() {
+    let suggestTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastSuggestQuery = "";
+    let suppressSuggestOnce = false;
+
+    let locationWatchId: string | undefined;
+    let lastWatchLat: number | null = null;
+    let lastWatchLon: number | null = null;
+    let lastWatchFetchAt = 0;
+
+    /** Prefer GPS / fused “precise” location; defaults are coarse (cell/Wi‑Fi) and often wrong by km. */
+    const accurateCurrentPosition = () =>
+      Geolocation.getCurrentPosition({
+        enableHighAccuracy: true,
+        timeout: 30000,
+        maximumAge: 0,
+      });
+
+    async function stopGpsWatch() {
+      if (!locationWatchId) return;
+      const id = locationWatchId;
+      locationWatchId = undefined;
+      try {
+        await Geolocation.clearWatch({ id });
+      } catch {
+        /* clearWatch may be unavailable on web */
+      }
+      lastWatchLat = null;
+      lastWatchLon = null;
+    }
+
+    async function startGpsWatch(initialLat: number, initialLon: number) {
+      await stopGpsWatch();
+      lastWatchLat = initialLat;
+      lastWatchLon = initialLon;
+      lastWatchFetchAt = Date.now();
+
+      try {
+        locationWatchId = await Geolocation.watchPosition(
+          {
+            enableHighAccuracy: true,
+            timeout: 25000,
+            maximumAge: 10000,
+            interval: 30000,
+            minimumUpdateInterval: 25000,
+          },
+          async (position, err) => {
+            if (err || !position) return;
+            const lat = position.coords.latitude;
+            const lon = position.coords.longitude;
+            if (lastWatchLat === null || lastWatchLon === null) {
+              lastWatchLat = lat;
+              lastWatchLon = lon;
+              return;
+            }
+            const movedM = haversineMeters(lastWatchLat, lastWatchLon, lat, lon);
+            const now = Date.now();
+            if (movedM < 900) return;
+            if (now - lastWatchFetchAt < 50000) return;
+
+            lastWatchFetchAt = now;
+            lastWatchLat = lat;
+            lastWatchLon = lon;
+
+            try {
+              const resp = await fetchForecast(`${lat},${lon}`);
+              suppressSuggestOnce = true;
+              city = resp.location.name;
+              applyForecastResponse(resp);
+            } catch (e) {
+              console.error(e);
+            }
+          }
+        );
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    onDestroy(() => {
+      if (suggestTimer) clearTimeout(suggestTimer);
+      void stopGpsWatch();
+      void clearWeatherNotification();
+    });
+
+    onMount(() => {
+      void loadWeatherFromCurrentLocation();
+    });
+
+    function applyForecastResponse(resp: WeatherApiResponse) {
+      data = resp;
+      buildHourlyAndDaily(resp);
+      void syncWeatherNotification(resp, currentPrecipChancePct);
+    }
+
+    async function loadWeatherFromCurrentLocation() {
       error = "";
+      loading = true;
       data = null;
       hourly = [];
       daily = [];
       currentPrecipChancePct = null;
 
       try {
-        const resp = await fetchForecast(city);
-        data = resp;
-        buildHourlyAndDaily(resp);
-      } catch (e: any) {
-        error = e.message;
+        await stopGpsWatch();
+        try {
+          const checked = await Geolocation.checkPermissions();
+          if (checked.location !== "granted") {
+            try {
+              const requested = await Geolocation.requestPermissions();
+              if (requested.location !== "granted") {
+                error = "Location permission denied. Enter a city to get weather.";
+                return;
+              }
+            } catch {
+              // Web: requestPermissions is unimplemented; getCurrentPosition will trigger the browser prompt.
+            }
+          }
+        } catch {
+          // checkPermissions unavailable in this environment — still try the position read.
+        }
+
+        const pos = await accurateCurrentPosition();
+        const { latitude, longitude } = pos.coords;
+        const resp = await fetchForecast(`${latitude},${longitude}`);
+        suppressSuggestOnce = true;
+        city = resp.location.name;
+        applyForecastResponse(resp);
+        await startGpsWatch(latitude, longitude);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        error =
+          msg ||
+          "Could not get your location. Enter a city and tap Get weather.";
         console.error(e);
+        await stopGpsWatch();
+      } finally {
+        loading = false;
       }
     }
 
-    export async function getCurrentLocationWeather() {
-      const pos = await Geolocation.getCurrentPosition();
-      const { latitude, longitude } = pos.coords;
-      return await fetchForecast(`${latitude},${longitude}`);
+    $effect(() => {
+      const q = city.trim();
+      suggestionsError = "";
+
+      if (suggestTimer) clearTimeout(suggestTimer);
+
+      if (suppressSuggestOnce) {
+        suppressSuggestOnce = false;
+        return;
+      }
+
+      if (q.length < 2) {
+        suggestions = [];
+        suggestionsOpen = false;
+        highlightedSuggestionIdx = -1;
+        lastSuggestQuery = q;
+        return;
+      }
+
+      suggestTimer = setTimeout(async () => {
+        if (q === lastSuggestQuery) return;
+        lastSuggestQuery = q;
+        suggestionsLoading = true;
+        highlightedSuggestionIdx = -1;
+        try {
+          const results = await fetchCitySuggestions(q);
+          // Keep more results and rely on dropdown max-height + scrolling.
+          suggestions = results.slice(0, 20);
+          suggestionsOpen = suggestions.length > 0;
+        } catch (e: any) {
+          suggestions = [];
+          suggestionsOpen = false;
+          suggestionsError = e?.message || "Failed to load suggestions";
+        } finally {
+          suggestionsLoading = false;
+        }
+      }, 250);
+    });
+
+    function applySuggestion(s: WeatherApiCitySearchResult) {
+      suppressSuggestOnce = true;
+      city = `${s.name}, ${s.region ? `${s.region}, ` : ""}${s.country}`.replace(", ,", ",").trim();
+      suggestions = [];
+      suggestionsOpen = false;
+      highlightedSuggestionIdx = -1;
+      void fetchWeather();
+    }
+
+    function onCityKeyDown(e: KeyboardEvent) {
+      if (!suggestionsOpen || !suggestions.length) return;
+
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        highlightedSuggestionIdx = Math.min(suggestions.length - 1, highlightedSuggestionIdx + 1);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        highlightedSuggestionIdx = Math.max(0, highlightedSuggestionIdx - 1);
+      } else if (e.key === "Enter") {
+        if (highlightedSuggestionIdx >= 0 && highlightedSuggestionIdx < suggestions.length) {
+          e.preventDefault();
+          applySuggestion(suggestions[highlightedSuggestionIdx]);
+        }
+      } else if (e.key === "Escape") {
+        suggestionsOpen = false;
+        highlightedSuggestionIdx = -1;
+      }
+    }
+
+    async function fetchWeather() {
+      error = "";
+      const q = city.trim();
+      if (!q) {
+        error = "Enter a city or use My location.";
+        return;
+      }
+
+      loading = true;
+      data = null;
+      hourly = [];
+      daily = [];
+      currentPrecipChancePct = null;
+
+      try {
+        await stopGpsWatch();
+        const resp = await fetchForecast(q);
+        applyForecastResponse(resp);
+      } catch (e: unknown) {
+        error = e instanceof Error ? e.message : "Request failed";
+        console.error(e);
+      } finally {
+        loading = false;
+      }
     }
 </script>
 
-<main>
+<div class="page">
   <h1>Weather App</h1>
 
-  <input
-    placeholder="Enter city"
-    bind:value={city}
-  />
+  <div class="search">
+    <input
+      placeholder="City (default: your location)"
+      bind:value={city}
+      onkeydown={onCityKeyDown}
+      onfocus={() => (suggestionsOpen = suggestions.length > 0)}
+      onblur={() => setTimeout(() => (suggestionsOpen = false), 120)}
+      autocomplete="off"
+      aria-autocomplete="list"
+      aria-expanded={suggestionsOpen}
+      aria-controls="city-suggestions"
+    />
 
-  <button onclick={fetchWeather}>
-    Get Weather
-  </button>
+    {#if suggestionsLoading}
+      <div class="suggest-hint">Searching…</div>
+    {:else if suggestionsError}
+      <div class="suggest-hint error">{suggestionsError}</div>
+    {/if}
+
+    {#if suggestionsOpen}
+      <div id="city-suggestions" class="suggestions" role="listbox">
+        {#each suggestions as s, idx (s.id)}
+          <button
+            type="button"
+            class="suggestion {idx === highlightedSuggestionIdx ? 'active' : ''}"
+            role="option"
+            aria-selected={idx === highlightedSuggestionIdx}
+            onclick={() => applySuggestion(s)}
+          >
+            <div class="suggestion-name">{s.name}</div>
+            <div class="suggestion-meta">{s.region ? `${s.region} • ` : ""}{s.country}</div>
+          </button>
+        {/each}
+      </div>
+    {/if}
+  </div>
+
+  <div class="actions">
+    <button type="button" onclick={fetchWeather} disabled={loading}>Get weather</button>
+    <button type="button" onclick={() => loadWeatherFromCurrentLocation()} disabled={loading}>My location</button>
+  </div>
 
   {#if error}
     <p style="color:red">{error}</p>
@@ -240,22 +524,101 @@
       </div>
     </section>
   {/if}
-</main>
+</div>
 
 <style>
-  main {
-    padding: 2rem;
+  .page {
+    padding: clamp(1rem, 3vw, 2rem);
     font-family: sans-serif;
     text-align: center;
+    max-width: 720px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    /* Keep content full-width so horizontal scrollers can overflow. */
+    align-items: stretch;
+  }
+
+  .search {
+    width: 100%;
+    max-width: 520px;
+    margin: 0.5rem 0 0;
+    position: relative;
+    text-align: left;
   }
 
   input {
     padding: 0.5rem;
-    margin: 0.5rem;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: center;
+    margin: 0.75rem 0 0.25rem;
+    flex-wrap: wrap;
   }
 
   button {
     padding: 0.5rem 1rem;
+  }
+
+  .suggest-hint {
+    margin-top: 0.25rem;
+    font-size: 0.85rem;
+    opacity: 0.75;
+  }
+
+  .suggest-hint.error {
+    opacity: 1;
+    color: #b00020;
+  }
+
+  .suggestions {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    background: white;
+    border: 1px solid #e6e6e6;
+    border-radius: 10px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.12);
+    max-height: min(320px, 45vh);
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    z-index: 10;
+  }
+
+  .forecast {
+    width: 100%;
+  }
+
+  .suggestion {
+    width: 100%;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    padding: 0.6rem 0.75rem;
+    cursor: pointer;
+  }
+
+  .suggestion:hover,
+  .suggestion.active {
+    background: #f3f3f3;
+  }
+
+  .suggestion-name {
+    font-weight: 600;
+  }
+
+  .suggestion-meta {
+    font-size: 0.85rem;
+    opacity: 0.75;
+    margin-top: 0.05rem;
   }
 
   .card {
