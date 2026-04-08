@@ -27,7 +27,7 @@ public final class WeatherNotificationHelper {
             "Current weather",
             NotificationManager.IMPORTANCE_DEFAULT
         );
-        ch.setDescription("Live conditions from Weather App.");
+        ch.setDescription("Live conditions from WeatherAPI.");
         ch.enableVibration(false);
         NotificationManager nm = context.getSystemService(NotificationManager.class);
         if (nm != null) nm.createNotificationChannel(ch);

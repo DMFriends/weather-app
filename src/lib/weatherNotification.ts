@@ -42,7 +42,7 @@ async function ensureIosChannel() {
 	await LocalNotifications.createChannel({
 		id: CHANNEL_ID,
 		name: "Current weather",
-		description: "Live conditions from Weather App.",
+		description: "Live conditions from WeatherAPI.",
 		importance: 3,
 		vibration: false,
 	});
