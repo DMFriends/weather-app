@@ -24,6 +24,9 @@ import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
+import java.util.Locale;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 
 /**
  * Fetches forecast from WeatherAPI and updates the notification. Runs periodically and after dismiss.
@@ -54,15 +57,15 @@ public class WeatherSyncWorker extends Worker {
         WorkManager.getInstance(context.getApplicationContext()).enqueue(once);
     }
 
-    @NonNull
-    @Override
-    public Result doWork() {
-        Context ctx = getApplicationContext();
+    /**
+     * Synchronous fetch + notification update. Call from a background thread (alarm / dismiss receiver).
+     */
+    public static void performSync(Context ctx) {
         SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String apiKey = prefs.getString(KEY_API, null);
         String query = prefs.getString(KEY_QUERY, null);
         if (apiKey == null || apiKey.isEmpty() || query == null || query.isEmpty()) {
-            return Result.success();
+            return;
         }
 
         try {
@@ -76,7 +79,7 @@ public class WeatherSyncWorker extends Worker {
             JSONObject root = new JSONObject(json);
             if (root.has("error")) {
                 Log.w(TAG, "API error: " + json);
-                return Result.success();
+                return;
             }
 
             JSONObject loc = root.getJSONObject("location");
@@ -85,19 +88,25 @@ public class WeatherSyncWorker extends Worker {
             double tempF = current.getDouble("temp_f");
             double windMph = current.getDouble("wind_mph");
             String windDir = current.getString("wind_dir");
+            long apiUpdatedEpoch = current.optLong("last_updated_epoch", 0);
 
             long nowSec = System.currentTimeMillis() / 1000;
             int precip = computePrecipPct(root, nowSec);
 
             String body =
-                String.format(java.util.Locale.US, "%.1f °F · %.0f mph %s · %d%% precip", tempF, windMph, windDir, precip);
+                String.format(Locale.US, "%.1f °F · %.0f mph %s · %d%% precip", tempF, windMph, windDir, precip);
 
             WeatherNotificationHelper.show(ctx, title, body);
-            return Result.success();
         } catch (Exception e) {
             Log.e(TAG, "Weather sync failed", e);
-            return Result.success();
         }
+    }
+
+    @NonNull
+    @Override
+    public Result doWork() {
+        performSync(getApplicationContext());
+        return Result.success();
     }
 
     private static int computePrecipPct(JSONObject root, long nowSec) throws Exception {

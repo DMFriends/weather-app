@@ -267,22 +267,27 @@
     onDestroy(() => {
       if (suggestTimer) clearTimeout(suggestTimer);
       void stopGpsWatch();
-      void clearWeatherNotification();
     });
 
     onMount(() => {
       void loadWeatherFromCurrentLocation();
     });
 
-    function applyForecastResponse(resp: WeatherApiResponse) {
+    let locationPending = $state(false);
+
+    function applyForecastResponse(resp: WeatherApiResponse, opts?: { notify?: boolean }) {
       data = resp;
       buildHourlyAndDaily(resp);
-      void syncWeatherNotification(resp, currentPrecipChancePct);
+      const notify = opts?.notify ?? true;
+      if (notify) {
+        void syncWeatherNotification(resp, currentPrecipChancePct);
+      }
     }
 
     async function loadWeatherFromCurrentLocation() {
       error = "";
       loading = true;
+      locationPending = true;
       data = null;
       hourly = [];
       daily = [];
@@ -290,6 +295,9 @@
 
       try {
         await stopGpsWatch();
+        // While we’re still determining the current location, don’t show stale notification data.
+        // We’ll re-send once we have a real position + fresh forecast.
+        await clearWeatherNotification();
         try {
           const checked = await Geolocation.checkPermissions();
           if (checked.location !== "granted") {
@@ -312,7 +320,8 @@
         const resp = await fetchForecast(`${latitude},${longitude}`);
         suppressSuggestOnce = true;
         city = resp.location.name;
-        applyForecastResponse(resp);
+        locationPending = false;
+        applyForecastResponse(resp, { notify: true });
         await startGpsWatch(latitude, longitude);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -322,6 +331,7 @@
         console.error(e);
         await stopGpsWatch();
       } finally {
+        locationPending = false;
         loading = false;
       }
     }

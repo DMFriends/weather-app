@@ -7,7 +7,8 @@ const CHANNEL_ID = "current_weather";
 
 /** Android: native WorkManager + dismiss receiver (updates while app closed, reposts when swiped). */
 const WeatherNativeNotification = registerPlugin<{
-	sync: (opts: { apiKey: string; query: string }) => Promise<void>;
+	sync: (opts: { apiKey: string; query: string; title: string; body: string }) => Promise<void>;
+	requestExactAlarms?: () => Promise<void>;
 	clear: () => Promise<void>;
 }>("WeatherNativeNotification");
 
@@ -47,6 +48,18 @@ async function ensureIosChannel() {
 		vibration: false,
 	});
 	channelEnsured = true;
+}
+
+async function ensureAndroidChannel() {
+	if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "android") return;
+	// `createChannel` is Android-only; safe to call multiple times.
+	await LocalNotifications.createChannel({
+		id: CHANNEL_ID,
+		name: "Current weather",
+		description: "Live conditions from WeatherAPI.",
+		importance: 3,
+		vibration: false,
+	});
 }
 
 function stopWatchdog() {
@@ -120,9 +133,23 @@ export async function syncWeatherNotification(
 
 	if (Capacitor.getPlatform() === "android") {
 		activeSnapshot = { weather, precipPct };
+
+		const title = weather.location.name;
+		const precip = precipPct ?? 0;
+		const body = `${weather.current.temp_f.toFixed(1)} °F · ${weather.current.wind_mph.toFixed(0)} mph ${weather.current.wind_dir} · ${precip}% precip`;
+
+		// If available, prompt Android 12+ to allow exact alarms for reliable refresh cadence.
+		try {
+			await WeatherNativeNotification.requestExactAlarms?.();
+		} catch {
+			/* noop */
+		}
+
 		await WeatherNativeNotification.sync({
 			apiKey: PUBLIC_API_KEY,
 			query: weatherQuery(weather),
+			title,
+			body,
 		});
 		return;
 	}

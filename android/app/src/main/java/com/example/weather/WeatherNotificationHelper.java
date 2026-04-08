@@ -7,6 +7,8 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 
 import androidx.core.app.NotificationCompat;
 
@@ -50,6 +52,8 @@ public final class WeatherNotificationHelper {
             .setSmallIcon(R.drawable.ic_stat_weather_rain)
             .setContentIntent(contentPi)
             .setDeleteIntent(deletePi)
+            .setWhen(System.currentTimeMillis())
+            .setShowWhen(true)
             .setOngoing(true)
             .setAutoCancel(false)
             .setOnlyAlertOnce(true)
@@ -61,7 +65,14 @@ public final class WeatherNotificationHelper {
         n.flags |= Notification.FLAG_ONGOING_EVENT;
 
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm != null) nm.notify(NOTIFICATION_ID, n);
+        if (nm != null) {
+            // Force "clear then resend" behavior to be observable.
+            nm.cancel(NOTIFICATION_ID);
+            new Handler(Looper.getMainLooper()).postDelayed(
+                () -> nm.notify(NOTIFICATION_ID, n),
+                600
+            );
+        }
     }
 
     public static void cancel(Context context) {
