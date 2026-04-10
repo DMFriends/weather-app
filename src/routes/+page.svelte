@@ -1,6 +1,11 @@
 <script lang="ts">
     import { Geolocation } from "@capacitor/geolocation";
     import { PUBLIC_API_KEY } from "$env/static/public";
+    import {
+      isForecastCacheFresh,
+      readForecastCache,
+      writeForecastCache,
+    } from "$lib/weatherForecastCache";
     import { clearWeatherNotification, syncWeatherNotification } from "$lib/weatherNotification";
     import { onDestroy, onMount } from "svelte";
 
@@ -195,13 +200,26 @@
     let lastWatchLon: number | null = null;
     let lastWatchFetchAt = 0;
 
-    /** Prefer GPS / fused “precise” location; defaults are coarse (cell/Wi‑Fi) and often wrong by km. */
-    const accurateCurrentPosition = () =>
-      Geolocation.getCurrentPosition({
-        enableHighAccuracy: true,
-        timeout: 30000,
-        maximumAge: 0,
-      });
+    /**
+     * Fast first fix: allow a recent OS-cached position and short timeouts so the UI doesn’t
+     * sit behind a cold GPS lock. Falls back to coarse/network location if precise times out.
+     * Further refinement happens via startGpsWatch when the device moves or delivers updates.
+     */
+    async function getQuickInitialPosition() {
+      const attempts: Parameters<typeof Geolocation.getCurrentPosition>[0][] = [
+        { enableHighAccuracy: true, maximumAge: 300_000, timeout: 8_000 },
+        { enableHighAccuracy: false, maximumAge: 600_000, timeout: 10_000 },
+      ];
+      let lastErr: unknown;
+      for (const opts of attempts) {
+        try {
+          return await Geolocation.getCurrentPosition(opts);
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      throw lastErr;
+    }
 
     async function stopGpsWatch() {
       if (!locationWatchId) return;
@@ -250,7 +268,9 @@
             lastWatchLon = lon;
 
             try {
-              const resp = await fetchForecast(`${lat},${lon}`);
+              const q = `${lat},${lon}`;
+              const resp = await fetchForecast(q);
+              writeForecastCache(q, resp);
               suppressSuggestOnce = true;
               city = resp.location.name;
               applyForecastResponse(resp);
@@ -270,6 +290,14 @@
     });
 
     onMount(() => {
+      const cached = readForecastCache<WeatherApiResponse>();
+      if (cached && isForecastCacheFresh(cached)) {
+        suppressSuggestOnce = true;
+        city = cached.response.location.name;
+        applyForecastResponse(cached.response, { notify: true });
+        void startGpsWatch(cached.response.location.lat, cached.response.location.lon);
+        return;
+      }
       void loadWeatherFromCurrentLocation();
     });
 
@@ -315,9 +343,11 @@
           // checkPermissions unavailable in this environment — still try the position read.
         }
 
-        const pos = await accurateCurrentPosition();
+        const pos = await getQuickInitialPosition();
         const { latitude, longitude } = pos.coords;
-        const resp = await fetchForecast(`${latitude},${longitude}`);
+        const q = `${latitude},${longitude}`;
+        const resp = await fetchForecast(q);
+        writeForecastCache(q, resp);
         suppressSuggestOnce = true;
         city = resp.location.name;
         locationPending = false;
@@ -421,6 +451,7 @@
       try {
         await stopGpsWatch();
         const resp = await fetchForecast(q);
+        writeForecastCache(q, resp);
         applyForecastResponse(resp);
       } catch (e: unknown) {
         error = e instanceof Error ? e.message : "Request failed";
