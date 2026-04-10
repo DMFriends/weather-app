@@ -25,8 +25,6 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 import java.util.Locale;
-import java.text.SimpleDateFormat;
-import java.util.Date;
 
 /**
  * Fetches forecast from WeatherAPI and updates the notification. Runs periodically and after dismiss.
@@ -37,7 +35,7 @@ public class WeatherSyncWorker extends Worker {
     private static final String PREFS = "weather_native_notification";
     private static final String KEY_API = "api_key";
     private static final String KEY_QUERY = "query_q";
-    private static final String UNIQUE_PERIODIC = "weather_periodic_sync";
+    public static final String UNIQUE_PERIODIC = "weather_periodic_sync";
 
     public WeatherSyncWorker(@NonNull Context context, @NonNull WorkerParameters workerParams) {
         super(context, workerParams);
@@ -79,6 +77,7 @@ public class WeatherSyncWorker extends Worker {
             JSONObject root = new JSONObject(json);
             if (root.has("error")) {
                 Log.w(TAG, "API error: " + json);
+                WeatherNotificationHelper.showCachedIfAvailable(ctx);
                 return;
             }
 
@@ -99,6 +98,7 @@ public class WeatherSyncWorker extends Worker {
             WeatherNotificationHelper.show(ctx, title, body);
         } catch (Exception e) {
             Log.e(TAG, "Weather sync failed", e);
+            WeatherNotificationHelper.showCachedIfAvailable(ctx);
         }
     }
 

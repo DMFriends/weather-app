@@ -8,6 +8,8 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
 
+import androidx.work.WorkManager;
+
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
@@ -33,15 +35,20 @@ public class WeatherNativeNotificationPlugin extends Plugin {
 
         Context ctx = getContext().getApplicationContext();
         SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        prefs.edit().putString(KEY_API, apiKey).putString(KEY_QUERY, query).apply();
+        SharedPreferences.Editor ed = prefs.edit().putString(KEY_API, apiKey).putString(KEY_QUERY, query);
+        if (title != null && body != null) {
+            ed.putString(WeatherNotificationHelper.KEY_LAST_TITLE, title).putString(WeatherNotificationHelper.KEY_LAST_BODY, body);
+        }
+        ed.apply();
 
         // Update immediately using the in-app payload (so it matches the UI),
-        // then rely on alarms to refresh in the background.
+        // then rely on alarms + periodic work to refresh in the background.
         if (title != null && body != null) {
             WeatherNotificationHelper.show(ctx, title, body);
         }
         WeatherAlarmScheduler.cancel(ctx);
         WeatherAlarmScheduler.scheduleNext(ctx);
+        WeatherSyncWorker.schedulePeriodic(ctx);
         call.resolve();
     }
 
@@ -72,6 +79,7 @@ public class WeatherNativeNotificationPlugin extends Plugin {
         Context ctx = getContext().getApplicationContext();
         WeatherAlarmScheduler.cancel(ctx);
         WeatherNotificationHelper.cancel(ctx);
+        WorkManager.getInstance(ctx).cancelUniqueWork(WeatherSyncWorker.UNIQUE_PERIODIC);
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply();
         call.resolve();
     }
