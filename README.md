@@ -1,7 +1,7 @@
 # Weather App
 
 A simple weather mobile app which uses data from the [WeatherAPI](https://www.weatherapi.com). Supported on both Android and iOS.
-Android builds can be found [here](https://github.com/DMFriends/weather-app/releases). See instructions below for building the app for iOS.
+Android builds can be found [here](https://github.com/DMFriends/weather-app/releases/latest). See instructions below for building the app for iOS.
 
 ## Building for iOS
 
