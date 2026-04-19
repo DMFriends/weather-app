@@ -5,11 +5,6 @@ import android.content.SharedPreferences;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
-import androidx.work.Constraints;
-import androidx.work.NetworkType;
-import androidx.work.OneTimeWorkRequest;
-import androidx.work.PeriodicWorkRequest;
-import androidx.work.WorkManager;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
@@ -23,11 +18,10 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.TimeUnit;
 import java.util.Locale;
 
 /**
- * Fetches forecast from WeatherAPI and updates the notification. Runs periodically and after dismiss.
+ * Fetches forecast from WeatherAPI and updates the notification (e.g. when the app syncs or after dismiss + location refresh).
  */
 public class WeatherSyncWorker extends Worker {
 
@@ -41,22 +35,8 @@ public class WeatherSyncWorker extends Worker {
         super(context, workerParams);
     }
 
-    public static void schedulePeriodic(Context context) {
-        Constraints constraints = new Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build();
-        PeriodicWorkRequest periodic = new PeriodicWorkRequest.Builder(WeatherSyncWorker.class, 15, TimeUnit.MINUTES)
-            .setConstraints(constraints)
-            .build();
-        WorkManager.getInstance(context.getApplicationContext()).enqueueUniquePeriodicWork(UNIQUE_PERIODIC, androidx.work.ExistingPeriodicWorkPolicy.UPDATE, periodic);
-    }
-
-    public static void runOnce(Context context) {
-        Constraints constraints = new Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build();
-        OneTimeWorkRequest once = new OneTimeWorkRequest.Builder(WeatherSyncWorker.class).setConstraints(constraints).build();
-        WorkManager.getInstance(context.getApplicationContext()).enqueue(once);
-    }
-
     /**
-     * Synchronous fetch + notification update. Call from a background thread (alarm / dismiss receiver).
+     * Synchronous fetch + notification update. Call from a background thread (e.g. dismiss receiver).
      */
     public static void performSync(Context ctx) {
         SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
@@ -77,7 +57,6 @@ public class WeatherSyncWorker extends Worker {
             JSONObject root = new JSONObject(json);
             if (root.has("error")) {
                 Log.w(TAG, "API error: " + json);
-                WeatherNotificationHelper.showCachedIfAvailable(ctx);
                 return;
             }
 
@@ -98,7 +77,6 @@ public class WeatherSyncWorker extends Worker {
             WeatherNotificationHelper.show(ctx, title, body);
         } catch (Exception e) {
             Log.e(TAG, "Weather sync failed", e);
-            WeatherNotificationHelper.showCachedIfAvailable(ctx);
         }
     }
 

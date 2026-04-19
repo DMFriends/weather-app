@@ -13,7 +13,7 @@ import androidx.core.app.NotificationCompat;
 
 /**
  * Posts the ongoing weather notification with a delete intent so dismissal can trigger a refresh.
- * Persists last title/body so we can show a notification immediately after reboot or when sync fails.
+ * Persisting last title/body is kept for debugging, but we avoid re-posting cached content.
  */
 public final class WeatherNotificationHelper {
 
@@ -31,10 +31,11 @@ public final class WeatherNotificationHelper {
         NotificationChannel ch = new NotificationChannel(
             CHANNEL_ID,
             "Current weather",
-            NotificationManager.IMPORTANCE_DEFAULT
+            NotificationManager.IMPORTANCE_LOW
         );
         ch.setDescription("Live conditions from WeatherAPI.");
         ch.enableVibration(false);
+        ch.setSound(null, null);
         NotificationManager nm = context.getSystemService(NotificationManager.class);
         if (nm != null) nm.createNotificationChannel(ch);
     }
@@ -60,7 +61,9 @@ public final class WeatherNotificationHelper {
             .setOngoing(true)
             .setAutoCancel(false)
             .setOnlyAlertOnce(true)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setSilent(true)
+            .setDefaults(0)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE);
 
@@ -78,19 +81,6 @@ public final class WeatherNotificationHelper {
         Context app = context.getApplicationContext();
         SharedPreferences prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         prefs.edit().putString(KEY_LAST_TITLE, title).putString(KEY_LAST_BODY, body).apply();
-    }
-
-    /**
-     * Re-posts the last known notification (e.g. right after boot before network is up, or sync failed).
-     */
-    public static boolean showCachedIfAvailable(Context context) {
-        Context app = context.getApplicationContext();
-        SharedPreferences prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        String title = prefs.getString(KEY_LAST_TITLE, null);
-        String body = prefs.getString(KEY_LAST_BODY, null);
-        if (title == null || title.isEmpty() || body == null || body.isEmpty()) return false;
-        show(app, title, body);
-        return true;
     }
 
     public static void cancel(Context context) {

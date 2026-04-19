@@ -1,11 +1,9 @@
 <script lang="ts">
+    import { App } from "@capacitor/app";
     import { Geolocation } from "@capacitor/geolocation";
+    import type { PluginListenerHandle } from "@capacitor/core";
     import { PUBLIC_API_KEY } from "$env/static/public";
-    import {
-      isForecastCacheFresh,
-      readForecastCache,
-      writeForecastCache,
-    } from "$lib/weatherForecastCache";
+    import { readForecastCache, writeForecastCache } from "$lib/weatherForecastCache";
     import { clearWeatherNotification, syncWeatherNotification } from "$lib/weatherNotification";
     import { onDestroy, onMount } from "svelte";
 
@@ -199,16 +197,20 @@
     let lastWatchLat: number | null = null;
     let lastWatchLon: number | null = null;
     let lastWatchFetchAt = 0;
+    let appStateHandle: PluginListenerHandle | undefined;
 
     /**
-     * Fast first fix: allow a recent OS-cached position and short timeouts so the UI doesn’t
-     * sit behind a cold GPS lock. Falls back to coarse/network location if precise times out.
-     * Further refinement happens via startGpsWatch when the device moves or delivers updates.
+     * Prefer a fresh, high-accuracy position on open/reopen so UI + notification stay aligned.
+     * Falls back gradually only when GPS is unavailable or too slow.
      */
     async function getQuickInitialPosition() {
       const attempts: Parameters<typeof Geolocation.getCurrentPosition>[0][] = [
-        { enableHighAccuracy: true, maximumAge: 300_000, timeout: 8_000 },
-        { enableHighAccuracy: false, maximumAge: 600_000, timeout: 10_000 },
+        // Strict first try: require a new GPS fix (no cached position reuse).
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 18_000 },
+        // If GPS is cold, accept a very recent high-accuracy fix.
+        { enableHighAccuracy: true, maximumAge: 10_000, timeout: 10_000 },
+        // Last resort to avoid total failure indoors.
+        { enableHighAccuracy: false, maximumAge: 30_000, timeout: 8_000 },
       ];
       let lastErr: unknown;
       for (const opts of attempts) {
@@ -287,18 +289,23 @@
     onDestroy(() => {
       if (suggestTimer) clearTimeout(suggestTimer);
       void stopGpsWatch();
+      if (appStateHandle) {
+        void appStateHandle.remove();
+        appStateHandle = undefined;
+      }
     });
 
     onMount(() => {
-      const cached = readForecastCache<WeatherApiResponse>();
-      if (cached && isForecastCacheFresh(cached)) {
-        suppressSuggestOnce = true;
-        city = cached.response.location.name;
-        applyForecastResponse(cached.response, { notify: true });
-        void startGpsWatch(cached.response.location.lat, cached.response.location.lon);
-        return;
-      }
-      void loadWeatherFromCurrentLocation();
+      void loadWeatherOnOpenOrResume();
+      void (async () => {
+        try {
+          appStateHandle = await App.addListener("appStateChange", (state) => {
+            if (state.isActive) void loadWeatherOnOpenOrResume();
+          });
+        } catch {
+          // App plugin not available on web.
+        }
+      })();
     });
 
     let locationPending = $state(false);
@@ -312,6 +319,92 @@
       }
     }
 
+    async function ensureLocationPermission(): Promise<boolean> {
+      try {
+        const checked = await Geolocation.checkPermissions();
+        if (checked.location !== "granted") {
+          try {
+            const requested = await Geolocation.requestPermissions();
+            if (requested.location !== "granted") {
+              error = "Location permission denied. Enter a city to get weather.";
+              return false;
+            }
+          } catch {
+            // Web: requestPermissions is unimplemented; getCurrentPosition will trigger the browser prompt.
+          }
+        }
+      } catch {
+        // checkPermissions unavailable in this environment — still try the position read.
+      }
+      return true;
+    }
+
+    /** Geolocate + forecast + optional notification sync (used after cache paint and for “My location”). */
+    async function fetchForecastFromCurrentPosition(notify: boolean): Promise<boolean> {
+      await stopGpsWatch();
+      await clearWeatherNotification();
+      if (!(await ensureLocationPermission())) return false;
+      const pos = await getQuickInitialPosition();
+      const { latitude, longitude } = pos.coords;
+      const q = `${latitude},${longitude}`;
+      const resp = await fetchForecast(q);
+      writeForecastCache(q, resp);
+      suppressSuggestOnce = true;
+      city = resp.location.name;
+      applyForecastResponse(resp, { notify });
+      await startGpsWatch(latitude, longitude);
+      return true;
+    }
+
+    /** Open / resume: paint last cached forecast immediately, then refresh from current GPS in the background. */
+    async function loadWeatherOnOpenOrResume() {
+      error = "";
+      const cached = readForecastCache<WeatherApiResponse>();
+      if (cached) {
+        suppressSuggestOnce = true;
+        city = cached.response.location.name;
+        applyForecastResponse(cached.response, { notify: false });
+        locationPending = false;
+        loading = false;
+        void startGpsWatch(cached.response.location.lat, cached.response.location.lon);
+        void (async () => {
+          loading = true;
+          locationPending = true;
+          try {
+            await fetchForecastFromCurrentPosition(true);
+          } catch (e) {
+            console.error(e);
+          } finally {
+            loading = false;
+            locationPending = false;
+          }
+        })();
+        return;
+      }
+
+      loading = true;
+      locationPending = true;
+      data = null;
+      hourly = [];
+      daily = [];
+      currentPrecipChancePct = null;
+      try {
+        const ok = await fetchForecastFromCurrentPosition(true);
+        if (!ok) await stopGpsWatch();
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        error =
+          msg ||
+          "Could not get your location. Enter a city and tap Get weather.";
+        console.error(e);
+        await stopGpsWatch();
+      } finally {
+        locationPending = false;
+        loading = false;
+      }
+    }
+
+    /** “My location” button: always bypass UI cache and fetch from current GPS + API. */
     async function loadWeatherFromCurrentLocation() {
       error = "";
       loading = true;
@@ -320,39 +413,9 @@
       hourly = [];
       daily = [];
       currentPrecipChancePct = null;
-
       try {
-        await stopGpsWatch();
-        // While we’re still determining the current location, don’t show stale notification data.
-        // We’ll re-send once we have a real position + fresh forecast.
-        await clearWeatherNotification();
-        try {
-          const checked = await Geolocation.checkPermissions();
-          if (checked.location !== "granted") {
-            try {
-              const requested = await Geolocation.requestPermissions();
-              if (requested.location !== "granted") {
-                error = "Location permission denied. Enter a city to get weather.";
-                return;
-              }
-            } catch {
-              // Web: requestPermissions is unimplemented; getCurrentPosition will trigger the browser prompt.
-            }
-          }
-        } catch {
-          // checkPermissions unavailable in this environment — still try the position read.
-        }
-
-        const pos = await getQuickInitialPosition();
-        const { latitude, longitude } = pos.coords;
-        const q = `${latitude},${longitude}`;
-        const resp = await fetchForecast(q);
-        writeForecastCache(q, resp);
-        suppressSuggestOnce = true;
-        city = resp.location.name;
-        locationPending = false;
-        applyForecastResponse(resp, { notify: true });
-        await startGpsWatch(latitude, longitude);
+        const ok = await fetchForecastFromCurrentPosition(true);
+        if (!ok) await stopGpsWatch();
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         error =
@@ -546,7 +609,7 @@
 
   {#if daily.length}
     <section class="forecast">
-      <h3>10-day forecast</h3>
+      <h3>Next 3 days</h3>
       <div class="daily-list">
         {#each daily as d}
           <div class="daily-item">

@@ -21,6 +21,8 @@ public class WeatherNativeNotificationPlugin extends Plugin {
     private static final String PREFS = "weather_native_notification";
     private static final String KEY_API = "api_key";
     private static final String KEY_QUERY = "query_q";
+    private static final String KEY_LAST_TITLE = WeatherNotificationHelper.KEY_LAST_TITLE;
+    private static final String KEY_LAST_BODY = WeatherNotificationHelper.KEY_LAST_BODY;
 
     @PluginMethod
     public void sync(PluginCall call) {
@@ -36,19 +38,32 @@ public class WeatherNativeNotificationPlugin extends Plugin {
         Context ctx = getContext().getApplicationContext();
         SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         SharedPreferences.Editor ed = prefs.edit().putString(KEY_API, apiKey).putString(KEY_QUERY, query);
-        if (title != null && body != null) {
-            ed.putString(WeatherNotificationHelper.KEY_LAST_TITLE, title).putString(WeatherNotificationHelper.KEY_LAST_BODY, body);
+        boolean hasDisplay =
+            title != null
+                && body != null
+                && !title.trim().isEmpty()
+                && !body.trim().isEmpty();
+        if (hasDisplay) {
+            ed.putString(KEY_LAST_TITLE, title).putString(KEY_LAST_BODY, body);
         }
         ed.apply();
 
-        // Update immediately using the in-app payload (so it matches the UI),
-        // then rely on alarms + periodic work to refresh in the background.
-        if (title != null && body != null) {
+        WeatherAlarmScheduler.cancel(ctx);
+        WorkManager.getInstance(ctx).cancelUniqueWork(WeatherSyncWorker.UNIQUE_PERIODIC);
+
+        if (hasDisplay) {
             WeatherNotificationHelper.show(ctx, title, body);
         }
-        WeatherAlarmScheduler.cancel(ctx);
-        WeatherAlarmScheduler.scheduleNext(ctx);
-        WeatherSyncWorker.schedulePeriodic(ctx);
+        call.resolve();
+    }
+
+    /** Hide the notification without wiping API key / query (used while reloading forecast). */
+    @PluginMethod
+    public void cancelDisplay(PluginCall call) {
+        Context ctx = getContext().getApplicationContext();
+        WeatherNotificationHelper.cancel(ctx);
+        SharedPreferences p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        p.edit().remove(KEY_LAST_TITLE).remove(KEY_LAST_BODY).apply();
         call.resolve();
     }
 
@@ -64,7 +79,6 @@ public class WeatherNativeNotificationPlugin extends Plugin {
                 call.resolve();
                 return;
             }
-            // Opens system UI where the user can allow exact alarms for this app.
             Intent i = new Intent(ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
             i.setData(android.net.Uri.parse("package:" + getContext().getPackageName()));
             getActivity().startActivity(i);

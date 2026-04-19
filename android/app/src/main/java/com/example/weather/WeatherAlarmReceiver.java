@@ -5,22 +5,12 @@ import android.content.Context;
 import android.content.Intent;
 
 /**
- * Alarm tick: refresh weather notification, then schedule the next tick.
+ * Legacy: previously chained 15-minute refresh alarms. Clears any still-scheduled alarm and does nothing else.
  */
 public class WeatherAlarmReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        final PendingResult pending = goAsync();
-        new Thread(() -> {
-            try {
-                Context app = context.getApplicationContext();
-                WeatherSyncWorker.performSync(app);
-                WeatherAlarmScheduler.scheduleNext(app);
-            } finally {
-                pending.finish();
-            }
-        }).start();
+        WeatherAlarmScheduler.cancel(context.getApplicationContext());
     }
 }
-
