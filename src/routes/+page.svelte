@@ -540,10 +540,6 @@
       error = "";
       loading = true;
       locationPending = true;
-      data = null;
-      hourly = [];
-      daily = [];
-      currentPrecipChancePct = null;
       try {
         const ok = await fetchForecastFromCurrentPosition(true);
         if (!ok) await stopGpsWatch();
@@ -632,7 +628,7 @@
       error = "";
       const q = city.trim();
       if (!q) {
-        error = "Enter a city or use My location.";
+        error = "Enter a city or use current location.";
         return;
       }
 
@@ -697,8 +693,8 @@
   </div>
 
   <div class="actions">
-    <button type="button" onclick={fetchWeather} disabled={loading}>Get weather</button>
-    <button type="button" onclick={() => loadWeatherFromCurrentLocation()} disabled={loading}>My location</button>
+    <button type="button" onclick={fetchWeather} disabled={loading}>Get Weather</button>
+    <button type="button" onclick={() => loadWeatherFromCurrentLocation()} disabled={loading}>Current Location</button>
     <label class="unit-select">
       <span class="unit-label">Units</span>
       <select bind:value={tempUnit} aria-label="Temperature units">
