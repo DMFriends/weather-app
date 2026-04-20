@@ -32,6 +32,9 @@ public class WeatherSyncWorker extends Worker {
     private static final String KEY_API = "api_key";
     private static final String KEY_QUERY = "query_q";
     public static final String UNIQUE_PERIODIC = "weather_periodic_sync";
+    public static final String UNIQUE_DISMISS_REFRESH = "weather_dismiss_refresh";
+    /** When true, {@link #doWork()} resolves a fresh device location before calling the API. */
+    public static final String INPUT_REFRESH_LOCATION = "refresh_location";
 
     public WeatherSyncWorker(@NonNull Context context, @NonNull WorkerParameters workerParams) {
         super(context, workerParams);
@@ -45,8 +48,11 @@ public class WeatherSyncWorker extends Worker {
         String apiKey = prefs.getString(KEY_API, null);
         String query = !TextUtils.isEmpty(queryOverride) ? queryOverride : prefs.getString(KEY_QUERY, null);
         if (apiKey == null || apiKey.isEmpty() || query == null || query.isEmpty()) {
+            Log.w(TAG, "performSync aborted: apiKey=" + (apiKey == null ? "null" : (apiKey.isEmpty() ? "empty" : "present")) +
+                " query=" + (query == null ? "null" : (query.isEmpty() ? "empty" : query)));
             return;
         }
+        Log.i(TAG, "performSync calling API with q=" + query);
 
         try {
             String urlStr =
@@ -77,6 +83,7 @@ public class WeatherSyncWorker extends Worker {
             String body =
                 String.format(Locale.US, "%.1f °F · %.1f mph %s · %d%% precip", tempF, windMph, windDir, precip);
 
+            Log.i(TAG, "performSync posting notification title=" + title + " body=" + body);
             WeatherNotificationHelper.show(ctx, title, body);
         } catch (Exception e) {
             Log.e(TAG, "Weather sync failed", e);
@@ -91,7 +98,31 @@ public class WeatherSyncWorker extends Worker {
     @NonNull
     @Override
     public Result doWork() {
-        performSync(getApplicationContext());
+        Context app = getApplicationContext();
+        boolean refreshLocation = getInputData().getBoolean(INPUT_REFRESH_LOCATION, false);
+        Log.i(TAG, "doWork start refreshLocation=" + refreshLocation);
+        try {
+            if (refreshLocation) {
+                String q = WeatherLocationHelper.resolveFreshLatLonQuery(app);
+                Log.i(TAG, "resolveFreshLatLonQuery -> " + (q == null ? "null" : q));
+                if (TextUtils.isEmpty(q)) {
+                    // Couldn't get a fresh fix (GPS cooling off, indoors, Samsung power throttle, etc.).
+                    // Still refresh weather data for the last known coords so the notification body is
+                    // up-to-date even if the location is slightly stale; only fall back to showing
+                    // unchanged persisted text if we don't have any stored coords either.
+                    Log.w(TAG, "No fresh fix; calling API with last persisted query instead.");
+                    performSync(app);
+                } else {
+                    WeatherLocationHelper.persistQueryBlocking(app, q);
+                    performSync(app, q);
+                }
+            } else {
+                performSync(app);
+            }
+        } finally {
+            WeatherNotificationHelper.cancelUpdating(app);
+            Log.i(TAG, "doWork end");
+        }
         return Result.success();
     }
 
