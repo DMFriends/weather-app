@@ -13,7 +13,7 @@ import androidx.core.app.NotificationCompat;
 
 /**
  * Posts the ongoing weather notification with a delete intent so dismissal can trigger a refresh.
- * Persisting last title/body is kept for debugging, but we avoid re-posting cached content.
+ * Persists last title/body so we can immediately re-post while background refresh is running.
  */
 public final class WeatherNotificationHelper {
 
@@ -81,6 +81,17 @@ public final class WeatherNotificationHelper {
         Context app = context.getApplicationContext();
         SharedPreferences prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         prefs.edit().putString(KEY_LAST_TITLE, title).putString(KEY_LAST_BODY, body).apply();
+    }
+
+    /** Re-post the last known notification text if available. */
+    public static boolean showPersistedIfAvailable(Context context) {
+        Context app = context.getApplicationContext();
+        SharedPreferences prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String title = prefs.getString(KEY_LAST_TITLE, null);
+        String body = prefs.getString(KEY_LAST_BODY, null);
+        if (title == null || title.isEmpty() || body == null || body.isEmpty()) return false;
+        show(app, title, body);
+        return true;
     }
 
     public static void cancel(Context context) {

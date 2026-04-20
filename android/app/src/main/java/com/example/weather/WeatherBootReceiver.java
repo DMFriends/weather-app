@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver.PendingResult;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.text.TextUtils;
 
 import androidx.work.WorkManager;
 
@@ -32,8 +33,11 @@ public class WeatherBootReceiver extends BroadcastReceiver {
         final PendingResult pending = goAsync();
         new Thread(() -> {
             try {
-                WeatherLocationHelper.tryUpdateQueryFromLastKnownLocation(app);
-                WeatherSyncWorker.performSync(app);
+                String freshQ = WeatherLocationHelper.resolveFreshLatLonQuery(app);
+                if (!TextUtils.isEmpty(freshQ)) {
+                    WeatherLocationHelper.persistQueryBlocking(app, freshQ);
+                }
+                WeatherSyncWorker.performSync(app, freshQ);
             } finally {
                 pending.finish();
             }

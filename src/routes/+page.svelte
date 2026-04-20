@@ -23,6 +23,8 @@
       temp_f: number;
       chance_of_rain: number;
       chance_of_snow: number;
+      wind_mph: number;
+      wind_dir: string;
     };
 
     type WeatherApiForecastDay = {
@@ -32,6 +34,7 @@
         mintemp_f: number;
         daily_chance_of_rain: number;
         daily_chance_of_snow: number;
+        maxwind_mph: number;
       };
       hour: WeatherApiForecastHour[];
     };
@@ -70,6 +73,8 @@
       dateLabel: string;
       tempF: number;
       precipChancePct: number;
+      windMph: number;
+      windDir: string;
     };
 
     type DailyForecast = {
@@ -78,6 +83,8 @@
       highF: number;
       lowF: number;
       precipChancePct: number;
+      maxWindMph: number;
+      maxWindDir: string;
     };
 
     function clampPct(n: unknown) {
@@ -149,15 +156,31 @@
         dateLabel: formatHourDateLabel(h.time_epoch),
         tempF: h.temp_f,
         precipChancePct: precipChanceFromRainSnow(h.chance_of_rain, h.chance_of_snow),
+        windMph: typeof h.wind_mph === "number" ? h.wind_mph : 0,
+        windDir: typeof h.wind_dir === "string" ? h.wind_dir : "",
       }));
 
-      daily = forecastDays.slice(0, 10).map((d) => ({
-        dateEpoch: d.date_epoch,
-        label: formatDayLabel(d.date_epoch),
-        highF: d.day.maxtemp_f,
-        lowF: d.day.mintemp_f,
-        precipChancePct: precipChanceFromRainSnow(d.day.daily_chance_of_rain, d.day.daily_chance_of_snow),
-      }));
+      daily = forecastDays.slice(0, 10).map((d) => {
+        const hours = d.hour ?? [];
+        let maxWindDir = "";
+        let peakMph = -Infinity;
+        for (const h of hours) {
+          const mph = typeof h.wind_mph === "number" ? h.wind_mph : -Infinity;
+          if (mph > peakMph) {
+            peakMph = mph;
+            maxWindDir = typeof h.wind_dir === "string" ? h.wind_dir : "";
+          }
+        }
+        return {
+          dateEpoch: d.date_epoch,
+          label: formatDayLabel(d.date_epoch),
+          highF: d.day.maxtemp_f,
+          lowF: d.day.mintemp_f,
+          precipChancePct: precipChanceFromRainSnow(d.day.daily_chance_of_rain, d.day.daily_chance_of_snow),
+          maxWindMph: typeof d.day.maxwind_mph === "number" ? d.day.maxwind_mph : 0,
+          maxWindDir,
+        };
+      });
 
       const currentEpoch = resp.current?.last_updated_epoch;
       if (typeof currentEpoch === "number" && hourly.length) {
@@ -176,6 +199,30 @@
       }
     }
 
+    type TempUnit = "F" | "C";
+
+    const TEMP_UNIT_STORAGE_KEY = "weather-app:tempUnit";
+
+    function loadInitialTempUnit(): TempUnit {
+      if (typeof localStorage === "undefined") return "F";
+      const stored = localStorage.getItem(TEMP_UNIT_STORAGE_KEY);
+      return stored === "C" ? "C" : "F";
+    }
+
+    function fToC(f: number) {
+      return (f - 32) * (5 / 9);
+    }
+
+    function formatTemp(tempF: number, unit: TempUnit) {
+      const value = unit === "C" ? fToC(tempF) : tempF;
+      return `${Math.round(value)} °${unit}`;
+    }
+
+    function formatTempPrecise(tempF: number, unit: TempUnit) {
+      const value = unit === "C" ? fToC(tempF) : tempF;
+      return `${value.toFixed(1)} °${unit}`;
+    }
+
     let city = $state("");
     let data: WeatherApiResponse | null = $state(null);
     let hourly: HourlyForecast[] = $state([]);
@@ -183,6 +230,12 @@
     let currentPrecipChancePct: number | null = $state(null);
     let loading = $state(false);
     let error = $state("");
+    let tempUnit: TempUnit = $state(loadInitialTempUnit());
+
+    $effect(() => {
+      if (typeof localStorage === "undefined") return;
+      localStorage.setItem(TEMP_UNIT_STORAGE_KEY, tempUnit);
+    });
     let suggestions: WeatherApiCitySearchResult[] = $state([]);
     let suggestionsOpen = $state(false);
     let suggestionsLoading = $state(false);
@@ -199,28 +252,100 @@
     let lastWatchFetchAt = 0;
     let appStateHandle: PluginListenerHandle | undefined;
 
+    // Horizontal accuracy thresholds (meters). Anything worse than MAX is almost
+    // certainly a Wi-Fi/cell/IP guess and will be ignored outright to avoid
+    // showing weather for a random city.
+    const TARGET_ACCURACY_M = 50;
+    const ACCEPTABLE_ACCURACY_M = 200;
+    const MAX_ACCURACY_M = 2000;
+
+    type GeoPosition = Awaited<ReturnType<typeof Geolocation.getCurrentPosition>>;
+
     /**
-     * Prefer a fresh, high-accuracy position on open/reopen so UI + notification stay aligned.
-     * Falls back gradually only when GPS is unavailable or too slow.
+     * Stream high-accuracy GPS fixes and return the most accurate one within a
+     * deadline. Using watchPosition instead of a single getCurrentPosition call
+     * lets us discard the first cold-start fix (which is often a wildly wrong
+     * Wi-Fi / cell-tower guess) and wait for a real GPS lock.
      */
-    async function getQuickInitialPosition() {
-      const attempts: Parameters<typeof Geolocation.getCurrentPosition>[0][] = [
-        // Strict first try: require a new GPS fix (no cached position reuse).
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 18_000 },
-        // If GPS is cold, accept a very recent high-accuracy fix.
-        { enableHighAccuracy: true, maximumAge: 10_000, timeout: 10_000 },
-        // Last resort to avoid total failure indoors.
-        { enableHighAccuracy: false, maximumAge: 30_000, timeout: 8_000 },
-      ];
-      let lastErr: unknown;
-      for (const opts of attempts) {
-        try {
-          return await Geolocation.getCurrentPosition(opts);
-        } catch (e) {
-          lastErr = e;
-        }
-      }
-      throw lastErr;
+    async function getAccurateInitialPosition(): Promise<GeoPosition> {
+      const INITIAL_WAIT_MS = 8_000; // after this, accept best-so-far if acceptable
+      const MAX_WAIT_MS = 20_000; // overall deadline before giving up
+
+      return await new Promise<GeoPosition>((resolve, reject) => {
+        let best: GeoPosition | null = null;
+        let watchId: string | undefined;
+        let settled = false;
+        let initialTimer: ReturnType<typeof setTimeout> | undefined;
+        let overallTimer: ReturnType<typeof setTimeout> | undefined;
+
+        const cleanup = () => {
+          if (initialTimer) clearTimeout(initialTimer);
+          if (overallTimer) clearTimeout(overallTimer);
+          if (watchId) {
+            const id = watchId;
+            watchId = undefined;
+            Geolocation.clearWatch({ id }).catch(() => {});
+          }
+        };
+
+        const finish = (pos: GeoPosition) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve(pos);
+        };
+
+        const fail = (err: unknown) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(err);
+        };
+
+        (async () => {
+          try {
+            watchId = await Geolocation.watchPosition(
+              { enableHighAccuracy: true, maximumAge: 0, timeout: MAX_WAIT_MS },
+              (position, err) => {
+                if (err || !position) return;
+                const acc = position.coords.accuracy;
+                if (!Number.isFinite(acc) || acc > MAX_ACCURACY_M) return;
+                if (!best || acc < best.coords.accuracy) best = position;
+                if (acc <= TARGET_ACCURACY_M) finish(position);
+              }
+            );
+          } catch {
+            // Web fallback: watchPosition may be unavailable or rejected; try a
+            // single high-accuracy read and still enforce the accuracy gate.
+            try {
+              const pos = await Geolocation.getCurrentPosition({
+                enableHighAccuracy: true,
+                maximumAge: 0,
+                timeout: MAX_WAIT_MS,
+              });
+              if (
+                Number.isFinite(pos.coords.accuracy) &&
+                pos.coords.accuracy <= MAX_ACCURACY_M
+              ) {
+                finish(pos);
+              } else {
+                fail(new Error("Location accuracy too low"));
+              }
+            } catch (err2) {
+              fail(err2);
+            }
+          }
+        })();
+
+        initialTimer = setTimeout(() => {
+          if (best && best.coords.accuracy <= ACCEPTABLE_ACCURACY_M) finish(best);
+        }, INITIAL_WAIT_MS);
+
+        overallTimer = setTimeout(() => {
+          if (best) finish(best);
+          else fail(new Error("Timed out waiting for an accurate location"));
+        }, MAX_WAIT_MS);
+      });
     }
 
     async function stopGpsWatch() {
@@ -253,6 +378,10 @@
           },
           async (position, err) => {
             if (err || !position) return;
+            // Ignore coarse / network-only fixes — a single bad reading here
+            // would otherwise re-fetch weather for a totally wrong city.
+            const acc = position.coords.accuracy;
+            if (!Number.isFinite(acc) || acc > MAX_ACCURACY_M) return;
             const lat = position.coords.latitude;
             const lon = position.coords.longitude;
             if (lastWatchLat === null || lastWatchLon === null) {
@@ -262,7 +391,9 @@
             }
             const movedM = haversineMeters(lastWatchLat, lastWatchLon, lat, lon);
             const now = Date.now();
-            if (movedM < 900) return;
+            // Require movement to clearly exceed reported uncertainty so GPS
+            // jitter around a stationary user doesn't trigger a refetch.
+            if (movedM < Math.max(900, acc * 2)) return;
             if (now - lastWatchFetchAt < 50000) return;
 
             lastWatchFetchAt = now;
@@ -344,7 +475,7 @@
       await stopGpsWatch();
       await clearWeatherNotification();
       if (!(await ensureLocationPermission())) return false;
-      const pos = await getQuickInitialPosition();
+      const pos = await getAccurateInitialPosition();
       const { latitude, longitude } = pos.coords;
       const q = `${latitude},${longitude}`;
       const resp = await fetchForecast(q);
@@ -568,6 +699,13 @@
   <div class="actions">
     <button type="button" onclick={fetchWeather} disabled={loading}>Get weather</button>
     <button type="button" onclick={() => loadWeatherFromCurrentLocation()} disabled={loading}>My location</button>
+    <label class="unit-select">
+      <span class="unit-label">Units</span>
+      <select bind:value={tempUnit} aria-label="Temperature units">
+        <option value="F">Fahrenheit (°F)</option>
+        <option value="C">Celsius (°C)</option>
+      </select>
+    </label>
   </div>
 
   {#if error}
@@ -577,7 +715,7 @@
   {#if data}
     <div class="card">
       <h2>{data.location.name}</h2>
-      <p>🌡️ {data.current.temp_f.toFixed(1)} °F</p>
+      <p>🌡️ {formatTempPrecise(data.current.temp_f, tempUnit)}</p>
       <p>💨 {data.current.wind_mph.toFixed(1)} mph {data.current.wind_dir} ({Math.round(data.current.wind_degree)}°)</p>
       <p>☔ {currentPrecipChancePct ?? 0}% precip</p>
     </div>
@@ -596,10 +734,13 @@
               {h.dateLabel}
             </div>
             <div class="hourly-temp">
-              {Math.round(h.tempF)} °F
+              {formatTemp(h.tempF, tempUnit)}
             </div>
             <div class="hourly-pop">
               {h.precipChancePct}% precip
+            </div>
+            <div class="hourly-wind">
+              {h.windMph.toFixed(1)} mph{h.windDir ? ` ${h.windDir}` : ""}
             </div>
           </div>
         {/each}
@@ -617,11 +758,12 @@
               {d.label}
             </div>
             <div class="daily-temps">
-              <span>High {Math.round(d.highF)} °F</span>
-              <span>Low {Math.round(d.lowF)} °F</span>
+              <span>High {formatTemp(d.highF, tempUnit)}</span>
+              <span>Low {formatTemp(d.lowF, tempUnit)}</span>
             </div>
-            <div class="daily-pop">
-              {d.precipChancePct}% precip
+            <div class="daily-meta">
+              <span>{d.precipChancePct}% precip</span>
+              <span>{d.maxWindMph.toFixed(1)} mph{d.maxWindDir ? ` ${d.maxWindDir}` : ""}</span>
             </div>
           </div>
         {/each}
@@ -667,6 +809,25 @@
 
   button {
     padding: 0.5rem 1rem;
+  }
+
+  .unit-select {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.9rem;
+  }
+
+  .unit-label {
+    opacity: 0.75;
+  }
+
+  .unit-select select {
+    padding: 0.4rem 0.5rem;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    background: white;
+    font-size: 0.9rem;
   }
 
   .suggest-hint {
@@ -749,15 +910,16 @@
   }
 
   .hourly-item {
-    min-width: 80px;
-    padding: 0.5rem;
+    min-width: 88px;
+    padding: 0.45rem 0.4rem;
     border-radius: 8px;
     background: #f8f8f8;
-    font-size: 0.85rem;
+    font-size: 0.75rem;
     text-align: center;
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: 0.2rem;
+    white-space: nowrap;
   }
 
   .hourly-time {
@@ -766,13 +928,19 @@
   }
 
   .hourly-date {
-    font-size: 0.72rem;
+    font-size: 0.65rem;
     opacity: 0.7;
     line-height: 1.1;
   }
 
   .hourly-pop {
-    margin-top: 0.15rem;
+    margin-top: 0.1rem;
+    font-size: 0.7rem;
+  }
+
+  .hourly-wind {
+    font-size: 0.7rem;
+    opacity: 0.8;
   }
 
   .daily-list {
@@ -806,8 +974,12 @@
     text-align: center;
   }
 
-  .daily-pop {
+  .daily-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
     flex: 1;
+    align-items: flex-end;
     text-align: right;
   }
 </style>

@@ -2,9 +2,11 @@ package com.example.weather;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.text.TextUtils;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
@@ -36,12 +38,12 @@ public class WeatherSyncWorker extends Worker {
     }
 
     /**
-     * Synchronous fetch + notification update. Call from a background thread (e.g. dismiss receiver).
+     * @param queryOverride If non-null, WeatherAPI is called with this `q` directly.
      */
-    public static void performSync(Context ctx) {
+    public static void performSync(Context ctx, @Nullable String queryOverride) {
         SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String apiKey = prefs.getString(KEY_API, null);
-        String query = prefs.getString(KEY_QUERY, null);
+        String query = !TextUtils.isEmpty(queryOverride) ? queryOverride : prefs.getString(KEY_QUERY, null);
         if (apiKey == null || apiKey.isEmpty() || query == null || query.isEmpty()) {
             return;
         }
@@ -57,6 +59,7 @@ public class WeatherSyncWorker extends Worker {
             JSONObject root = new JSONObject(json);
             if (root.has("error")) {
                 Log.w(TAG, "API error: " + json);
+                WeatherNotificationHelper.showPersistedIfAvailable(ctx);
                 return;
             }
 
@@ -72,12 +75,17 @@ public class WeatherSyncWorker extends Worker {
             int precip = computePrecipPct(root, nowSec);
 
             String body =
-                String.format(Locale.US, "%.1f °F · %.0f mph %s · %d%% precip", tempF, windMph, windDir, precip);
+                String.format(Locale.US, "%.1f °F · %.1f mph %s · %d%% precip", tempF, windMph, windDir, precip);
 
             WeatherNotificationHelper.show(ctx, title, body);
         } catch (Exception e) {
             Log.e(TAG, "Weather sync failed", e);
+            WeatherNotificationHelper.showPersistedIfAvailable(ctx);
         }
+    }
+
+    public static void performSync(Context ctx) {
+        performSync(ctx, null);
     }
 
     @NonNull

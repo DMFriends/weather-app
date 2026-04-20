@@ -111,7 +111,7 @@ async function postIosNotification(weather: WeatherNotifyPayload, precipPct: num
 	await ensureIosChannel();
 	const title = weather.location.name;
 	const precip = precipPct ?? 0;
-	const body = `${weather.current.temp_f.toFixed(1)} °F · ${weather.current.wind_mph.toFixed(0)} mph ${weather.current.wind_dir} · ${precip}% precip`;
+	const body = `${weather.current.temp_f.toFixed(1)} °F · ${weather.current.wind_mph.toFixed(1)} mph ${weather.current.wind_dir} · ${precip}% precip`;
 
 	await LocalNotifications.schedule({
 		notifications: [
@@ -152,7 +152,7 @@ export async function syncWeatherNotification(weather: WeatherNotifyPayload, pre
 
 		const title = weather.location.name;
 		const precip = precipPct ?? 0;
-		const body = `${weather.current.temp_f.toFixed(1)} °F · ${weather.current.wind_mph.toFixed(0)} mph ${weather.current.wind_dir} · ${precip}% precip`;
+		const body = `${weather.current.temp_f.toFixed(1)} °F · ${weather.current.wind_mph.toFixed(1)} mph ${weather.current.wind_dir} · ${precip}% precip`;
 
 		try {
 			await WeatherNativeNotification.requestExactAlarms?.();
