@@ -1,33 +1,41 @@
 package com.example.weather;
 
 import android.content.BroadcastReceiver;
-import android.content.BroadcastReceiver.PendingResult;
 import android.content.Context;
 import android.content.Intent;
-import android.text.TextUtils;
+
+import androidx.work.Data;
+import androidx.work.ExistingWorkPolicy;
+import androidx.work.OneTimeWorkRequest;
+import androidx.work.WorkManager;
 
 /**
- * When the user dismisses the weather notification, refresh from WeatherAPI using the current device location.
+ * When the user dismisses the weather notification, kick off a WorkManager job that resolves the
+ * current device location and refreshes the notification from WeatherAPI. The receiver itself stays
+ * well under the ~10s broadcast-receiver budget so Android can't kill us mid-refresh.
  */
 public class WeatherDismissReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        final PendingResult pending = goAsync();
-        new Thread(() -> {
-            try {
-                Context app = context.getApplicationContext();
-                // Re-post immediately so it doesn't disappear while fresh location/API are resolving.
-                WeatherNotificationHelper.showPersistedIfAvailable(app);
-                String q = WeatherLocationHelper.resolveFreshLatLonQuery(app);
-                if (TextUtils.isEmpty(q)) {
-                    return;
-                }
-                WeatherLocationHelper.persistQueryBlocking(app, q);
-                WeatherSyncWorker.performSync(app, q);
-            } finally {
-                pending.finish();
-            }
-        }).start();
+        Context app = context.getApplicationContext();
+
+        // Show a progress notification immediately so the user sees the refresh is in flight.
+        WeatherNotificationHelper.showUpdating(app);
+
+        Data input = new Data.Builder()
+            .putBoolean(WeatherSyncWorker.INPUT_REFRESH_LOCATION, true)
+            .build();
+
+        OneTimeWorkRequest refresh = new OneTimeWorkRequest.Builder(WeatherSyncWorker.class)
+            .setInputData(input)
+            .build();
+
+        // REPLACE so rapid repeated dismissals just restart the refresh rather than queueing.
+        WorkManager.getInstance(app).enqueueUniqueWork(
+            WeatherSyncWorker.UNIQUE_DISMISS_REFRESH,
+            ExistingWorkPolicy.REPLACE,
+            refresh
+        );
     }
 }

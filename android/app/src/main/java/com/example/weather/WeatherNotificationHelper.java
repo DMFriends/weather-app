@@ -18,6 +18,7 @@ import androidx.core.app.NotificationCompat;
 public final class WeatherNotificationHelper {
 
     public static final int NOTIFICATION_ID = 71234;
+    public static final int UPDATING_NOTIFICATION_ID = 71235;
     public static final String CHANNEL_ID = "current_weather";
 
     private static final String PREFS = "weather_native_notification";
@@ -97,5 +98,30 @@ public final class WeatherNotificationHelper {
     public static void cancel(Context context) {
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm != null) nm.cancel(NOTIFICATION_ID);
+    }
+
+    /** Posts a transient indeterminate-progress notification while a refresh is in flight. */
+    public static void showUpdating(Context context) {
+        ensureChannel(context);
+        NotificationCompat.Builder b = new NotificationCompat.Builder(context, CHANNEL_ID)
+            .setContentTitle("Updating weather\u2026")
+            .setContentText("Fetching latest conditions for your location")
+            .setSmallIcon(R.drawable.ic_stat_weather_rain)
+            .setProgress(0, 0, true)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setDefaults(0)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE);
+
+        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) nm.notify(UPDATING_NOTIFICATION_ID, b.build());
+    }
+
+    public static void cancelUpdating(Context context) {
+        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) nm.cancel(UPDATING_NOTIFICATION_ID);
     }
 }

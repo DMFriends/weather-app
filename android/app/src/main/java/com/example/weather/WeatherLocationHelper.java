@@ -11,6 +11,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 
 import androidx.core.content.ContextCompat;
@@ -43,26 +44,55 @@ public final class WeatherLocationHelper {
             return null;
         }
         LocationManager lm = (LocationManager) app.getSystemService(Context.LOCATION_SERVICE);
-        if (lm == null) return null;
+        if (lm == null) {
+            Log.w(TAG, "LocationManager unavailable");
+            return null;
+        }
 
         Location loc = null;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             loc = getCurrentLocation(lm, LocationManager.GPS_PROVIDER, CURRENT_LOC_TIMEOUT_MS);
-            if (loc == null) loc = getCurrentLocation(lm, LocationManager.NETWORK_PROVIDER, CURRENT_LOC_TIMEOUT_MS);
+            Log.i(TAG, "getCurrentLocation(gps) -> " + describe(loc));
+            if (loc == null) {
+                loc = getCurrentLocation(lm, LocationManager.NETWORK_PROVIDER, CURRENT_LOC_TIMEOUT_MS);
+                Log.i(TAG, "getCurrentLocation(network) -> " + describe(loc));
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && loc == null) {
                 try {
                     loc = getCurrentLocation(lm, LocationManager.FUSED_PROVIDER, CURRENT_LOC_TIMEOUT_MS);
-                } catch (Exception ignored) {
-                    /* fused may be unavailable */
+                    Log.i(TAG, "getCurrentLocation(fused) -> " + describe(loc));
+                } catch (Exception e) {
+                    Log.w(TAG, "fused provider unavailable: " + e);
                 }
             }
         }
-        if (loc == null) loc = requestSingleLocation(lm, LocationManager.GPS_PROVIDER, SINGLE_UPDATE_TIMEOUT_MS);
-        if (loc == null) loc = requestSingleLocation(lm, LocationManager.NETWORK_PROVIDER, SINGLE_UPDATE_TIMEOUT_MS);
-        if (loc == null) loc = bestLastKnownLocation(lm);
-        if (loc == null) return null;
+        if (loc == null) {
+            loc = requestSingleLocation(lm, LocationManager.GPS_PROVIDER, SINGLE_UPDATE_TIMEOUT_MS);
+            Log.i(TAG, "requestSingleLocation(gps) -> " + describe(loc));
+        }
+        if (loc == null) {
+            loc = requestSingleLocation(lm, LocationManager.NETWORK_PROVIDER, SINGLE_UPDATE_TIMEOUT_MS);
+            Log.i(TAG, "requestSingleLocation(network) -> " + describe(loc));
+        }
+        if (loc == null) {
+            loc = bestLastKnownLocation(lm);
+            Log.i(TAG, "bestLastKnownLocation -> " + describe(loc));
+        }
+        if (loc == null) {
+            Log.w(TAG, "resolveFreshLatLonQuery: no fix obtained");
+            return null;
+        }
 
-        return String.format(Locale.US, "%.6f,%.6f", loc.getLatitude(), loc.getLongitude());
+        String q = String.format(Locale.US, "%.6f,%.6f", loc.getLatitude(), loc.getLongitude());
+        Log.i(TAG, "resolveFreshLatLonQuery -> " + q);
+        return q;
+    }
+
+    private static String describe(Location loc) {
+        if (loc == null) return "null";
+        long ageMs = (SystemClock.elapsedRealtimeNanos() - loc.getElapsedRealtimeNanos()) / 1_000_000L;
+        return String.format(Locale.US, "%s @ %.6f,%.6f ageMs=%d",
+            loc.getProvider(), loc.getLatitude(), loc.getLongitude(), ageMs);
     }
 
     public static void persistQueryBlocking(Context app, String query) {
@@ -79,8 +109,19 @@ public final class WeatherLocationHelper {
     }
 
     private static boolean hasLocationPermission(Context app) {
-        return ContextCompat.checkSelfPermission(app, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-            || ContextCompat.checkSelfPermission(app, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        boolean fine = ContextCompat.checkSelfPermission(app, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        boolean coarse = ContextCompat.checkSelfPermission(app, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        boolean background = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+            || ContextCompat.checkSelfPermission(app, Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        if (!background) {
+            // On Android 10+ this causes the platform to silently return null from getCurrentLocation /
+            // getLastKnownLocation and silently drop requestLocationUpdates callbacks when the app is
+            // not in the foreground. Calls from WorkManager/BroadcastReceivers will appear to succeed
+            // but always return null. Grant via Settings -> App -> Permissions -> Location -> "Allow
+            // all the time".
+            Log.w(TAG, "ACCESS_BACKGROUND_LOCATION not granted; background location requests will return null");
+        }
+        return fine || coarse;
     }
 
     private static Location getCurrentLocation(LocationManager lm, String provider, long timeoutMs) {
