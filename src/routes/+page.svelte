@@ -5,6 +5,7 @@
     import { PUBLIC_API_KEY } from "$env/static/public";
     import { readForecastCache, writeForecastCache } from "$lib/weatherForecastCache";
     import { clearWeatherNotification, syncWeatherNotification } from "$lib/weatherNotification";
+    import { checkForUpdate, dismissUpdate, type UpdateInfo } from "$lib/updateCheck";
     import { onDestroy, onMount } from "svelte";
 
     function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -428,10 +429,14 @@
 
     onMount(() => {
       void loadWeatherOnOpenOrResume();
+      void runUpdateCheck();
       void (async () => {
         try {
           appStateHandle = await App.addListener("appStateChange", (state) => {
-            if (state.isActive) void loadWeatherOnOpenOrResume();
+            if (state.isActive) {
+              void loadWeatherOnOpenOrResume();
+              void runUpdateCheck();
+            }
           });
         } catch {
           // App plugin not available on web.
@@ -440,6 +445,21 @@
     });
 
     let locationPending = $state(false);
+    let updateInfo: UpdateInfo | null = $state(null);
+
+    async function runUpdateCheck() {
+      try {
+        const info = await checkForUpdate();
+        if (info) updateInfo = info;
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function dismissUpdatePrompt() {
+      if (updateInfo) dismissUpdate(updateInfo.latestVersion);
+      updateInfo = null;
+    }
 
     function applyForecastResponse(resp: WeatherApiResponse, opts?: { notify?: boolean }) {
       data = resp;
@@ -653,6 +673,33 @@
 </script>
 
 <div class="page">
+  {#if updateInfo}
+    <div class="update-banner" role="status" aria-live="polite">
+      <div class="update-banner-text">
+        <strong>Update available:</strong>
+        <span>v{updateInfo.latestVersion} is out (you're on v{updateInfo.currentVersion}).</span>
+      </div>
+      <div class="update-banner-actions">
+        <a
+          class="update-banner-link"
+          href={updateInfo.releaseUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          View release
+        </a>
+        <button
+          type="button"
+          class="update-banner-dismiss"
+          onclick={dismissUpdatePrompt}
+          aria-label="Dismiss update notice"
+        >
+          ×
+        </button>
+      </div>
+    </div>
+  {/if}
+
   <h1>Weather App</h1>
 
   <div class="search">
@@ -779,6 +826,57 @@
     flex-direction: column;
     /* Keep content full-width so horizontal scrollers can overflow. */
     align-items: stretch;
+  }
+
+  .update-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.6rem 0.85rem;
+    margin: 0 0 0.75rem;
+    border-radius: 10px;
+    background: #e8f1ff;
+    border: 1px solid #b8d4ff;
+    color: #0b3c8a;
+    font-size: 0.9rem;
+    text-align: left;
+  }
+
+  .update-banner-text {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    align-items: baseline;
+  }
+
+  .update-banner-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+  }
+
+  .update-banner-link {
+    color: #0b3c8a;
+    font-weight: 600;
+    text-decoration: underline;
+    white-space: nowrap;
+  }
+
+  .update-banner-dismiss {
+    padding: 0 0.5rem;
+    font-size: 1.1rem;
+    line-height: 1;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    cursor: pointer;
+    border-radius: 6px;
+  }
+
+  .update-banner-dismiss:hover {
+    background: rgba(11, 60, 138, 0.1);
   }
 
   .search {
