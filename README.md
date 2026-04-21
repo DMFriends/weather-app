@@ -23,9 +23,10 @@ Android builds are available on the [releases page](https://github.com/DMFriends
 ### First launch
 
 1. Open the app. You'll be asked to grant **location** and **notification** permissions.
-   - **Allow location** to get the forecast for where you are automatically.
-   - **Allow notifications** to see the always-on weather notification in your status bar.
-2. Once your location is available, the app loads the current conditions, a 72-hour hourly forecast, and a 10-day daily forecast.
+   - **Allow location** to get the forecast for where you are automatically upon opening the app.
+   - **Allow notifications all the time** to see the always-on weather notification in your status bar.
+   - **Android 12+:** you'll need to grant the app the "Alarms & reminders" permission (it should come up immediately when you first open the app).
+2. Once your location is available, the app loads the current conditions, a 72-hour hourly forecast, and a 3-day daily forecast.
 
 ### Searching for a different city
 
@@ -38,13 +39,13 @@ You can also type a free-form query (like `London, UK` or a latitude/longitude s
 
 ### Returning to your location
 
-Tap **My location** at any time to stop tracking the searched city and switch back to GPS-based local weather.
+Tap **Use Current Location** at any time to stop tracking the searched city and switch back to GPS-based local weather.
 
 ### Reading the forecast
 
 - **Top card** — current temperature, wind (mph + compass direction + degrees), and precipitation chance for the current hour.
 - **Next 72 hours** — scroll horizontally through hour-by-hour temperature and precipitation chance.
-- **10-day forecast** — scroll vertically to see daily high/low and precipitation chance for the next 10 days.
+- **Next 3 days** — scroll vertically to see daily high/low and precipitation chance for the next 10 days.
 
 ### Notification
 
@@ -55,16 +56,17 @@ Once granted permission, the app posts a single persistent notification that sho
 <Temperature> °F · <Wind mph> <Wind dir> · <Precip>% precip
 ```
 
-On Android, this updates automatically in the background every ~15 minutes. On iOS, it refreshes whenever the app is in the foreground. Dismissing it will trigger a refresh and re-post (the notification is designed to stay visible).
+On Android, you can dismiss the notification to refresh it with up-to-date weather data based on your current location. **It does not update automatically.**
+On iOS, the notification refreshes only when the app is in the foreground.
 
 ### Troubleshooting
 
-- **"Location permission denied"** — enable location access for the Weather app in your device settings, then tap **My location** or relaunch.
+- **"Location permission denied"** — enable location access for the Weather app in your device settings, then tap **Use Current Location** or relaunch.
 - **"Could not get your location"** — you can still type a city into the search box and tap **Get weather**.
 - **Notification not updating on Android** — make sure background battery optimizations aren't killing the app; on Android 12+ the app will prompt for the "Alarms & reminders" / exact alarms permission the first time.
 - **Stale data on reopen** — the cache is valid for 30 minutes; after that the app fetches a fresh forecast.
 
-## Building from Source
+# Building from Source
 
 ### Prerequisites
 
