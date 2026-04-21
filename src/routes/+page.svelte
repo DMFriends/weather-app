@@ -694,7 +694,7 @@
 
   <div class="actions">
     <button type="button" onclick={fetchWeather} disabled={loading}>Get Weather</button>
-    <button type="button" onclick={() => loadWeatherFromCurrentLocation()} disabled={loading}>Current Location</button>
+    <button type="button" onclick={() => loadWeatherFromCurrentLocation()} disabled={loading}>Use Current Location</button>
     <label class="unit-select">
       <span class="unit-label">Units</span>
       <select bind:value={tempUnit} aria-label="Temperature units">
