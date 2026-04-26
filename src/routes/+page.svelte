@@ -826,6 +826,26 @@
     flex-direction: column;
     /* Keep content full-width so horizontal scrollers can overflow. */
     align-items: stretch;
+    /* Fluid base font size: scales with viewport, clamped for tiny / large screens. */
+    font-size: clamp(0.95rem, 0.85rem + 0.6vw, 1.1rem);
+    line-height: 1.4;
+  }
+
+  .page h1 {
+    font-size: clamp(1.4rem, 1.1rem + 1.8vw, 2rem);
+    line-height: 1.2;
+    margin: 0.2rem 0 0.6rem;
+  }
+
+  .page h2 {
+    font-size: clamp(1.15rem, 0.95rem + 1.2vw, 1.6rem);
+    line-height: 1.25;
+    margin: 0 0 0.5rem;
+  }
+
+  .page h3 {
+    font-size: clamp(1rem, 0.9rem + 0.6vw, 1.2rem);
+    line-height: 1.25;
   }
 
   .update-banner {
@@ -839,7 +859,7 @@
     background: #e8f1ff;
     border: 1px solid #b8d4ff;
     color: #0b3c8a;
-    font-size: 0.9rem;
+    font-size: clamp(0.82rem, 0.78rem + 0.25vw, 0.95rem);
     text-align: left;
   }
 
@@ -891,6 +911,8 @@
     padding: 0.5rem;
     width: 100%;
     box-sizing: border-box;
+    /* 16px+ avoids iOS Safari zoom-on-focus and stays readable on tiny screens. */
+    font-size: clamp(1rem, 0.92rem + 0.4vw, 1.05rem);
   }
 
   .actions {
@@ -903,13 +925,14 @@
 
   button {
     padding: 0.5rem 1rem;
+    font-size: clamp(0.9rem, 0.84rem + 0.3vw, 1rem);
   }
 
   .unit-select {
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
-    font-size: 0.9rem;
+    font-size: clamp(0.85rem, 0.8rem + 0.25vw, 0.95rem);
   }
 
   .unit-label {
@@ -921,12 +944,12 @@
     border-radius: 6px;
     border: 1px solid #ccc;
     background: white;
-    font-size: 0.9rem;
+    font-size: inherit;
   }
 
   .suggest-hint {
     margin-top: 0.25rem;
-    font-size: 0.85rem;
+    font-size: clamp(0.78rem, 0.74rem + 0.2vw, 0.9rem);
     opacity: 0.75;
   }
 
@@ -972,10 +995,11 @@
 
   .suggestion-name {
     font-weight: 600;
+    font-size: clamp(0.9rem, 0.85rem + 0.3vw, 1rem);
   }
 
   .suggestion-meta {
-    font-size: 0.85rem;
+    font-size: clamp(0.78rem, 0.74rem + 0.2vw, 0.9rem);
     opacity: 0.75;
     margin-top: 0.05rem;
   }
@@ -1004,11 +1028,11 @@
   }
 
   .hourly-item {
-    min-width: 88px;
+    min-width: clamp(82px, 18vw, 110px);
     padding: 0.45rem 0.4rem;
     border-radius: 8px;
     background: #f8f8f8;
-    font-size: 0.75rem;
+    font-size: clamp(0.72rem, 0.66rem + 0.3vw, 0.85rem);
     text-align: center;
     display: flex;
     flex-direction: column;
@@ -1022,18 +1046,18 @@
   }
 
   .hourly-date {
-    font-size: 0.65rem;
+    font-size: clamp(0.62rem, 0.58rem + 0.2vw, 0.72rem);
     opacity: 0.7;
     line-height: 1.1;
   }
 
   .hourly-pop {
     margin-top: 0.1rem;
-    font-size: 0.7rem;
+    font-size: clamp(0.68rem, 0.62rem + 0.25vw, 0.78rem);
   }
 
   .hourly-wind {
-    font-size: 0.7rem;
+    font-size: clamp(0.68rem, 0.62rem + 0.25vw, 0.78rem);
     opacity: 0.8;
   }
 
@@ -1048,10 +1072,11 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 0.5rem;
     padding: 0.5rem 0.75rem;
     border-radius: 8px;
     background: #f8f8f8;
-    font-size: 0.9rem;
+    font-size: clamp(0.82rem, 0.76rem + 0.35vw, 1rem);
   }
 
   .daily-date {
