@@ -1,11 +1,29 @@
 <script lang="ts">
-    import { App } from "@capacitor/app";
     import { Geolocation } from "@capacitor/geolocation";
-    import type { PluginListenerHandle } from "@capacitor/core";
     import { PUBLIC_API_KEY } from "$env/static/public";
     import { readForecastCache, writeForecastCache } from "$lib/weatherForecastCache";
     import { clearWeatherNotification, syncWeatherNotification } from "$lib/weatherNotification";
+    import { clearNotifiedAlerts, syncAlertNotifications } from "$lib/weatherAlertNotifications";
     import { checkForUpdate, dismissUpdate, type UpdateInfo } from "$lib/updateCheck";
+    import {
+      buildDaily,
+      buildHourly,
+      currentPrecipChanceFromHourly,
+      formatTempPrecise,
+      getAlerts,
+      loadInitialTempUnit,
+      TEMP_UNIT_STORAGE_KEY,
+      type DailyForecast,
+      type HourlyForecast,
+      type TempUnit,
+      type WeatherApiResponse,
+    } from "$lib/forecast";
+    import {
+      isBootstrapped,
+      markBootstrapped,
+      registerHomeRefresh,
+      unregisterHomeRefresh,
+    } from "$lib/sessionState";
     import { onDestroy, onMount } from "svelte";
 
     function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -19,45 +37,6 @@
       return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
     }
 
-    type WeatherApiForecastHour = {
-      time_epoch: number;
-      temp_f: number;
-      chance_of_rain: number;
-      chance_of_snow: number;
-      wind_mph: number;
-      wind_dir: string;
-    };
-
-    type WeatherApiForecastDay = {
-      date_epoch: number;
-      day: {
-        maxtemp_f: number;
-        mintemp_f: number;
-        daily_chance_of_rain: number;
-        daily_chance_of_snow: number;
-        maxwind_mph: number;
-      };
-      hour: WeatherApiForecastHour[];
-    };
-
-    type WeatherApiResponse = {
-      location: {
-        name: string;
-        lat: number;
-        lon: number;
-      };
-      current: {
-        last_updated_epoch: number;
-        temp_f: number;
-        wind_mph: number;
-        wind_dir: string;
-        wind_degree: number;
-      };
-      forecast: {
-        forecastday: WeatherApiForecastDay[];
-      };
-    };
-
     type WeatherApiCitySearchResult = {
       id: number;
       name: string;
@@ -68,58 +47,9 @@
       url: string;
     };
 
-    type HourlyForecast = {
-      timeEpoch: number;
-      label: string;
-      dateLabel: string;
-      tempF: number;
-      precipChancePct: number;
-      windMph: number;
-      windDir: string;
-    };
-
-    type DailyForecast = {
-      dateEpoch: number;
-      label: string;
-      highF: number;
-      lowF: number;
-      precipChancePct: number;
-      maxWindMph: number;
-      maxWindDir: string;
-    };
-
-    function clampPct(n: unknown) {
-      const v = typeof n === "number" && Number.isFinite(n) ? n : 0;
-      return Math.max(0, Math.min(100, Math.round(v)));
-    }
-
-    function precipChanceFromRainSnow(rainPct: unknown, snowPct: unknown) {
-      return Math.max(clampPct(rainPct), clampPct(snowPct));
-    }
-
-    function formatHourLabel(timeEpochSeconds: number) {
-      return new Date(timeEpochSeconds * 1000).toLocaleTimeString([], { hour: "numeric" });
-    }
-
-    function formatHourDateLabel(timeEpochSeconds: number) {
-      return new Date(timeEpochSeconds * 1000).toLocaleDateString([], {
-        weekday: "short",
-        month: "short",
-        day: "numeric",
-      });
-    }
-
-    function formatDayLabel(dateEpochSeconds: number) {
-      return new Date(dateEpochSeconds * 1000).toLocaleDateString([], {
-        weekday: "short",
-        month: "short",
-        day: "numeric",
-      });
-    }
-
     async function fetchForecast(q: string) {
       const res = await fetch(
-        `https://api.weatherapi.com/v1/forecast.json?key=${PUBLIC_API_KEY}&q=${encodeURIComponent(q)}&days=10&aqi=no&alerts=no`
+        `https://api.weatherapi.com/v1/forecast.json?key=${PUBLIC_API_KEY}&q=${encodeURIComponent(q)}&days=10&aqi=no&alerts=yes`
       );
       const json = await res.json();
       if (!res.ok) {
@@ -139,89 +69,13 @@
       return json as WeatherApiCitySearchResult[];
     }
 
-    function hourlySlotsFromNow(allHours: WeatherApiForecastHour[], nowSec: number) {
-      // Each API hour row covers [time_epoch, time_epoch + 1h); keep slots that still apply to now or the future.
-      return allHours.filter((h) => h.time_epoch + 3600 > nowSec);
-    }
-
     function buildHourlyAndDaily(resp: WeatherApiResponse) {
-      const forecastDays = resp.forecast?.forecastday ?? [];
-      const allHours = forecastDays.flatMap((d) => d.hour ?? []);
-      const nowSec = Math.floor(Date.now() / 1000);
-      const relevantHours = hourlySlotsFromNow(allHours, nowSec);
-      const hoursForUi = relevantHours.length ? relevantHours : allHours;
-
-      hourly = hoursForUi.slice(0, 72).map((h) => ({
-        timeEpoch: h.time_epoch,
-        label: formatHourLabel(h.time_epoch),
-        dateLabel: formatHourDateLabel(h.time_epoch),
-        tempF: h.temp_f,
-        precipChancePct: precipChanceFromRainSnow(h.chance_of_rain, h.chance_of_snow),
-        windMph: typeof h.wind_mph === "number" ? h.wind_mph : 0,
-        windDir: typeof h.wind_dir === "string" ? h.wind_dir : "",
-      }));
-
-      daily = forecastDays.slice(0, 10).map((d) => {
-        const hours = d.hour ?? [];
-        let maxWindDir = "";
-        let peakMph = -Infinity;
-        for (const h of hours) {
-          const mph = typeof h.wind_mph === "number" ? h.wind_mph : -Infinity;
-          if (mph > peakMph) {
-            peakMph = mph;
-            maxWindDir = typeof h.wind_dir === "string" ? h.wind_dir : "";
-          }
-        }
-        return {
-          dateEpoch: d.date_epoch,
-          label: formatDayLabel(d.date_epoch),
-          highF: d.day.maxtemp_f,
-          lowF: d.day.mintemp_f,
-          precipChancePct: precipChanceFromRainSnow(d.day.daily_chance_of_rain, d.day.daily_chance_of_snow),
-          maxWindMph: typeof d.day.maxwind_mph === "number" ? d.day.maxwind_mph : 0,
-          maxWindDir,
-        };
-      });
-
-      const currentEpoch = resp.current?.last_updated_epoch;
-      if (typeof currentEpoch === "number" && hourly.length) {
-        let best = hourly[0];
-        let bestDist = Math.abs(best.timeEpoch - currentEpoch);
-        for (const h of hourly) {
-          const dist = Math.abs(h.timeEpoch - currentEpoch);
-          if (dist < bestDist) {
-            best = h;
-            bestDist = dist;
-          }
-        }
-        currentPrecipChancePct = best.precipChancePct;
-      } else {
-        currentPrecipChancePct = null;
-      }
-    }
-
-    type TempUnit = "F" | "C";
-
-    const TEMP_UNIT_STORAGE_KEY = "weather-app:tempUnit";
-
-    function loadInitialTempUnit(): TempUnit {
-      if (typeof localStorage === "undefined") return "F";
-      const stored = localStorage.getItem(TEMP_UNIT_STORAGE_KEY);
-      return stored === "C" ? "C" : "F";
-    }
-
-    function fToC(f: number) {
-      return (f - 32) * (5 / 9);
-    }
-
-    function formatTemp(tempF: number, unit: TempUnit) {
-      const value = unit === "C" ? fToC(tempF) : tempF;
-      return `${Math.round(value)} °${unit}`;
-    }
-
-    function formatTempPrecise(tempF: number, unit: TempUnit) {
-      const value = unit === "C" ? fToC(tempF) : tempF;
-      return `${value.toFixed(1)} °${unit}`;
+      hourly = buildHourly(resp);
+      daily = buildDaily(resp);
+      currentPrecipChancePct = currentPrecipChanceFromHourly(
+        hourly,
+        resp.current?.last_updated_epoch
+      );
     }
 
     let city = $state("");
@@ -232,6 +86,8 @@
     let loading = $state(false);
     let error = $state("");
     let tempUnit: TempUnit = $state(loadInitialTempUnit());
+
+    let alertCount = $derived(getAlerts(data).length);
 
     $effect(() => {
       if (typeof localStorage === "undefined") return;
@@ -251,7 +107,6 @@
     let lastWatchLat: number | null = null;
     let lastWatchLon: number | null = null;
     let lastWatchFetchAt = 0;
-    let appStateHandle: PluginListenerHandle | undefined;
 
     // Horizontal accuracy thresholds (meters). Anything worse than MAX is almost
     // certainly a Wi-Fi/cell/IP guess and will be ignored outright to avoid
@@ -418,30 +273,40 @@
       }
     }
 
+    /**
+     * Refresh callback the layout invokes when the app resumes from background.
+     * Forces a fresh fetch (resetting the bootstrap flag is handled by the
+     * caller in `sessionState`) and also re-runs the update check.
+     */
+    async function onAppResumed() {
+      await loadWeatherOnOpenOrResume();
+      void runUpdateCheck();
+    }
+
     onDestroy(() => {
       if (suggestTimer) clearTimeout(suggestTimer);
       void stopGpsWatch();
-      if (appStateHandle) {
-        void appStateHandle.remove();
-        appStateHandle = undefined;
-      }
+      unregisterHomeRefresh(onAppResumed);
     });
 
     onMount(() => {
-      void loadWeatherOnOpenOrResume();
-      void runUpdateCheck();
-      void (async () => {
-        try {
-          appStateHandle = await App.addListener("appStateChange", (state) => {
-            if (state.isActive) {
-              void loadWeatherOnOpenOrResume();
-              void runUpdateCheck();
-            }
-          });
-        } catch {
-          // App plugin not available on web.
+      registerHomeRefresh(onAppResumed);
+
+      if (isBootstrapped()) {
+        // Coming back from a sub-page (Hourly / Daily / Alerts) within the same
+        // app session — repaint from cache and resume GPS tracking, but don't
+        // hit the network again.
+        const cached = readForecastCache<WeatherApiResponse>();
+        if (cached) {
+          suppressSuggestOnce = true;
+          city = cached.response.location.name;
+          applyForecastResponse(cached.response, { notify: false });
+          void startGpsWatch(cached.response.location.lat, cached.response.location.lon);
         }
-      })();
+      } else {
+        void loadWeatherOnOpenOrResume();
+        void runUpdateCheck();
+      }
     });
 
     let locationPending = $state(false);
@@ -461,12 +326,24 @@
       updateInfo = null;
     }
 
+    let lastNotifiedLocationKey: string | null = null;
+
     function applyForecastResponse(resp: WeatherApiResponse, opts?: { notify?: boolean }) {
       data = resp;
       buildHourlyAndDaily(resp);
       const notify = opts?.notify ?? true;
       if (notify) {
         void syncWeatherNotification(resp, currentPrecipChancePct);
+
+        // Reset dedup keys when the user switches to a different location so
+        // alerts for the new place aren't suppressed by stale entries.
+        const locKey = `${resp.location?.lat?.toFixed(3)},${resp.location?.lon?.toFixed(3)}`;
+        if (lastNotifiedLocationKey && lastNotifiedLocationKey !== locKey) {
+          clearNotifiedAlerts();
+        }
+        lastNotifiedLocationKey = locKey;
+
+        void syncAlertNotifications(getAlerts(resp));
       }
     }
 
@@ -510,6 +387,9 @@
     /** Open / resume: paint last cached forecast immediately, then refresh from current GPS in the background. */
     async function loadWeatherOnOpenOrResume() {
       error = "";
+      // Mark before the network call so that a back-nav while we're fetching
+      // doesn't kick off a second concurrent refresh.
+      markBootstrapped();
       const cached = readForecastCache<WeatherApiResponse>();
       if (cached) {
         suppressSuggestOnce = true;
@@ -764,54 +644,30 @@
     </div>
   {/if}
 
-  {#if hourly.length}
-    <section class="forecast">
-      <h3>Next 72 hours</h3>
-      <div class="hourly-grid">
-        {#each hourly as h}
-          <div class="hourly-item">
-            <div class="hourly-time">
-              {h.label}
-            </div>
-            <div class="hourly-date">
-              {h.dateLabel}
-            </div>
-            <div class="hourly-temp">
-              {formatTemp(h.tempF, tempUnit)}
-            </div>
-            <div class="hourly-pop">
-              {h.precipChancePct}% precip
-            </div>
-            <div class="hourly-wind">
-              {h.windMph.toFixed(1)} mph{h.windDir ? ` ${h.windDir}` : ""}
-            </div>
-          </div>
-        {/each}
-      </div>
-    </section>
-  {/if}
-
-  {#if daily.length}
-    <section class="forecast">
-      <h3>Next 3 days</h3>
-      <div class="daily-list">
-        {#each daily as d}
-          <div class="daily-item">
-            <div class="daily-date">
-              {d.label}
-            </div>
-            <div class="daily-temps">
-              <span>High {formatTemp(d.highF, tempUnit)}</span>
-              <span>Low {formatTemp(d.lowF, tempUnit)}</span>
-            </div>
-            <div class="daily-meta">
-              <span>{d.precipChancePct}% precip</span>
-              <span>{d.maxWindMph.toFixed(1)} mph{d.maxWindDir ? ` ${d.maxWindDir}` : ""}</span>
-            </div>
-          </div>
-        {/each}
-      </div>
-    </section>
+  {#if data}
+    <nav class="forecast-nav" aria-label="Forecast sections">
+      <a class="nav-link" href="/hourly">
+        <span class="nav-icon" aria-hidden="true">⏱️</span>
+        <span class="nav-label">Hourly</span>
+        <span class="nav-meta">Next 72 hours</span>
+      </a>
+      <a class="nav-link" href="/daily">
+        <span class="nav-icon" aria-hidden="true">📅</span>
+        <span class="nav-label">Daily</span>
+        <span class="nav-meta">Next 3 days</span>
+      </a>
+      <a class="nav-link" href="/alerts" class:has-alerts={alertCount > 0}>
+        <span class="nav-icon" aria-hidden="true">⚠️</span>
+        <span class="nav-label">Alerts</span>
+        <span class="nav-meta">
+          {#if alertCount > 0}
+            {alertCount} active
+          {:else}
+            None active
+          {/if}
+        </span>
+      </a>
+    </nav>
   {/if}
 </div>
 
@@ -841,11 +697,6 @@
     font-size: clamp(1.15rem, 0.95rem + 1.2vw, 1.6rem);
     line-height: 1.25;
     margin: 0 0 0.5rem;
-  }
-
-  .page h3 {
-    font-size: clamp(1rem, 0.9rem + 0.6vw, 1.2rem);
-    line-height: 1.25;
   }
 
   .update-banner {
@@ -975,10 +826,6 @@
     z-index: 10;
   }
 
-  .forecast {
-    width: 100%;
-  }
-
   .suggestion {
     width: 100%;
     text-align: left;
@@ -1011,94 +858,65 @@
     background: #f3f3f3;
   }
 
-  .forecast {
-    margin-top: 2rem;
-    text-align: left;
+  .forecast-nav {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.6rem;
+    margin-top: 1rem;
   }
 
-  .forecast h3 {
-    margin-bottom: 0.5rem;
+  @media (max-width: 480px) {
+    .forecast-nav {
+      grid-template-columns: 1fr;
+    }
   }
 
-  .hourly-grid {
-    display: flex;
-    overflow-x: auto;
-    gap: 0.75rem;
-    padding-bottom: 0.5rem;
-  }
-
-  .hourly-item {
-    min-width: clamp(82px, 18vw, 110px);
-    padding: 0.45rem 0.4rem;
-    border-radius: 8px;
-    background: #f8f8f8;
-    font-size: clamp(0.72rem, 0.66rem + 0.3vw, 0.85rem);
-    text-align: center;
+  .nav-link {
     display: flex;
     flex-direction: column;
+    align-items: center;
+    justify-content: center;
     gap: 0.2rem;
-    white-space: nowrap;
+    padding: 0.85rem 0.5rem;
+    border-radius: 12px;
+    background: #f3f3f3;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    color: inherit;
+    text-decoration: none;
+    transition: transform 0.08s ease, background 0.12s ease, border-color 0.12s ease;
   }
 
-  .hourly-time {
-    font-weight: bold;
-    margin-bottom: 0;
+  .nav-link:hover {
+    background: #ececec;
+    border-color: rgba(15, 23, 42, 0.18);
   }
 
-  .hourly-date {
-    font-size: clamp(0.62rem, 0.58rem + 0.2vw, 0.72rem);
-    opacity: 0.7;
-    line-height: 1.1;
+  .nav-link:active {
+    transform: scale(0.98);
   }
 
-  .hourly-pop {
-    margin-top: 0.1rem;
-    font-size: clamp(0.68rem, 0.62rem + 0.25vw, 0.78rem);
+  .nav-link.has-alerts {
+    background: #fff4e5;
+    border-color: #f5b977;
+    color: #7a3d00;
   }
 
-  .hourly-wind {
-    font-size: clamp(0.68rem, 0.62rem + 0.25vw, 0.78rem);
-    opacity: 0.8;
+  .nav-link.has-alerts:hover {
+    background: #ffe9cc;
   }
 
-  .daily-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    margin-top: 0.5rem;
+  .nav-icon {
+    font-size: 1.4rem;
+    line-height: 1;
   }
 
-  .daily-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 0.75rem;
-    border-radius: 8px;
-    background: #f8f8f8;
-    font-size: clamp(0.82rem, 0.76rem + 0.35vw, 1rem);
+  .nav-label {
+    font-weight: 600;
+    font-size: clamp(0.95rem, 0.88rem + 0.3vw, 1.05rem);
   }
 
-  .daily-date {
-    flex: 1;
-    text-align: left;
-  }
-
-  .daily-temps {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    flex: 1;
-    align-items: center;
-    text-align: center;
-  }
-
-  .daily-meta {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    flex: 1;
-    align-items: flex-end;
-    text-align: right;
+  .nav-meta {
+    font-size: clamp(0.75rem, 0.7rem + 0.2vw, 0.85rem);
+    opacity: 0.75;
   }
 </style>
