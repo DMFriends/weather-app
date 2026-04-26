@@ -1,5 +1,37 @@
 <script lang="ts">
+	import { App } from "@capacitor/app";
+	import type { PluginListenerHandle } from "@capacitor/core";
+	import { notifyAppResumed } from "$lib/sessionState";
+	import { onDestroy, onMount } from "svelte";
+
 	let { children } = $props();
+
+	// Layout mounts once per app session and persists across SvelteKit client
+	// navigations, so registering the appStateChange listener here means we get
+	// resume notifications even when the user is on a sub-page (and we don't
+	// re-register on every back-press).
+	let appStateHandle: PluginListenerHandle | undefined;
+
+	onMount(() => {
+		void (async () => {
+			try {
+				appStateHandle = await App.addListener("appStateChange", (state) => {
+					if (state.isActive) {
+						notifyAppResumed();
+					}
+				});
+			} catch {
+				// App plugin not available on web — nothing to do.
+			}
+		})();
+	});
+
+	onDestroy(() => {
+		if (appStateHandle) {
+			void appStateHandle.remove();
+			appStateHandle = undefined;
+		}
+	});
 </script>
 
 <svelte:head>
