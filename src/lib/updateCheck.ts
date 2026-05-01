@@ -390,7 +390,14 @@ export async function checkForUpdate(
 
   let release: GithubReleaseResponse | null = cachedRelease;
   try {
-    const fetched = await fetchReleasesFeed(opts.signal, cachedEtag);
+    // On a forced check (manual button, app resume), skip the conditional
+    // request and always pull a full body. GitHub's atom feed regenerates
+    // its ETag asynchronously after release changes, so right after you
+    // delete/edit a release the origin can briefly serve a 304 against your
+    // old ETag even though the underlying feed has already moved on. Eating
+    // an extra ~3KB body is well worth never showing a phantom popup.
+    const etagToSend = opts.force ? null : cachedEtag;
+    const fetched = await fetchReleasesFeed(opts.signal, etagToSend);
     if (!fetched) return null;
 
     if (fetched.status === 304) {
