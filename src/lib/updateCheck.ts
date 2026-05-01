@@ -29,7 +29,6 @@ const GITHUB_REPO = "weather-app";
 const RELEASES_FEED_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases.atom`;
 const LATEST_RELEASE_HTML = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 
-const DISMISSED_VERSION_KEY = "weather-app:updateCheck:dismissedVersion";
 const LAST_CHECK_AT_KEY = "weather-app:updateCheck:lastCheckAt";
 const ETAG_KEY = "weather-app:updateCheck:etag";
 const CACHED_RELEASE_KEY = "weather-app:updateCheck:cachedRelease";
@@ -101,24 +100,6 @@ export function isNewerVersion(current: string, latest: string): boolean {
   return false;
 }
 
-function getDismissedVersion(): string | null {
-  if (typeof localStorage === "undefined") return null;
-  try {
-    return localStorage.getItem(DISMISSED_VERSION_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function dismissUpdate(version: string) {
-  if (typeof localStorage === "undefined") return;
-  try {
-    localStorage.setItem(DISMISSED_VERSION_KEY, version);
-  } catch {
-    /* storage may be unavailable (private mode, etc.) — ignore. */
-  }
-}
-
 function getNotifiedVersion(): string | null {
   if (typeof localStorage === "undefined") return null;
   try {
@@ -148,6 +129,9 @@ export function clearUpdateCheckState() {
     localStorage.removeItem(ETAG_KEY);
     localStorage.removeItem(CACHED_RELEASE_KEY);
     localStorage.removeItem(NOTIFIED_VERSION_KEY);
+    // Legacy: previous builds persisted a "user dismissed this version" flag
+    // here; we no longer use it, but tidy it up if it happens to still exist.
+    localStorage.removeItem("weather-app:updateCheck:dismissedVersion");
   } catch {
     /* ignore */
   }
@@ -365,9 +349,6 @@ function buildUpdateInfo(release: GithubReleaseResponse): UpdateInfo | null {
   if (!latestTag) return null;
 
   if (!isNewerVersion(APP_VERSION, latestTag)) return null;
-
-  const dismissed = getDismissedVersion();
-  if (dismissed && !isNewerVersion(dismissed, latestTag)) return null;
 
   return {
     currentVersion: APP_VERSION,
