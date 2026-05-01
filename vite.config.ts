@@ -53,6 +53,14 @@ function resolveAppVersion(): string {
 
 	// `--exact-match` exits non-zero when HEAD isn't sitting on a tag.
 	const isExactTag = tryGit(['describe', '--tags', '--exact-match', 'HEAD']).ok;
+	// `diff-index` compares against the index's stat cache (mtime/size). After
+	// any tool — Vite, gradle, npm — has touched a file's mtime without
+	// changing its content, that cache is stale and `diff-index` falsely
+	// reports the working tree as dirty. Refreshing the cache first reconciles
+	// it, the same way `git status` does internally. We discard the output;
+	// `--refresh` itself can exit non-zero when real edits exist, which is
+	// fine (the dirty-check below will then correctly report dirty).
+	tryGit(['update-index', '--refresh']);
 	// `diff-index --quiet` exits non-zero when there are uncommitted changes
 	// (staged or unstaged). It does NOT consider untracked files, which is
 	// what we want — random scratch files shouldn't taint the version.

@@ -1,4 +1,4 @@
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { LocalNotifications } from "@capacitor/local-notifications";
 
 /**
@@ -13,7 +13,20 @@ export const APP_VERSION = __APP_VERSION__;
 
 const GITHUB_OWNER = "DMFriends";
 const GITHUB_REPO = "weather-app";
-const LATEST_RELEASE_API = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
+/**
+ * Public Atom feed of all releases. We use this instead of the JSON API
+ * because:
+ *   - It's served by github.com web servers (not api.github.com), so it has
+ *     no rate limit attached to it — we can poll freely.
+ *   - It lists every release, latest first, ignoring the "Set as the latest
+ *     release" checkbox UI quirk that previously made our update check miss
+ *     newer-but-not-marked-latest releases.
+ *
+ * Trade-off: the feed doesn't expose a prerelease flag, so if a release is
+ * marked as prerelease on GitHub, the update check will still surface it.
+ * Our normal release flow doesn't use prereleases, so this is fine.
+ */
+const RELEASES_FEED_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases.atom`;
 const LATEST_RELEASE_HTML = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 
 const DISMISSED_VERSION_KEY = "weather-app:updateCheck:dismissedVersion";
@@ -21,27 +34,19 @@ const LAST_CHECK_AT_KEY = "weather-app:updateCheck:lastCheckAt";
 const ETAG_KEY = "weather-app:updateCheck:etag";
 const CACHED_RELEASE_KEY = "weather-app:updateCheck:cachedRelease";
 const NOTIFIED_VERSION_KEY = "weather-app:updateCheck:notifiedVersion";
-const LAST_MANUAL_CHECK_AT_KEY = "weather-app:updateCheck:lastManualCheckAt";
 
 /** Stable id so the OS coalesces repeat notifications instead of stacking. */
 const UPDATE_NOTIFICATION_ID = 84217;
-
 /**
- * How long to disable the manual "Check for updates" button after a click.
- * Matches the warm-cache throttle so a manual recheck and the automatic one
- * effectively share the same cadence.
+ * Throttle for the *first* (uncached) check. We're hitting the public Atom
+ * feed — no rate limits — but still want a sane cadence so we're not making
+ * a network round-trip on every single app open.
  */
-export const MANUAL_CHECK_COOLDOWN_MS = 30 * 60 * 1000;
+const COLD_CHECK_THROTTLE_MS = 60 * 60 * 1000;
 /**
- * Throttle for the *first* (uncached) check against the GitHub API — that one
- * costs a rate-limit point, so we keep the cadence conservative.
- */
-const COLD_CHECK_THROTTLE_MS = 6 * 60 * 60 * 1000;
-/**
- * Throttle once we have an ETag cached. Conditional requests that come back
- * 304 Not Modified do not count against the rate limit, so we can poll much
- * more aggressively and still be polite — 30 min gives a snappy notification
- * after a release without spamming GitHub.
+ * Throttle once we have an ETag cached. 304 Not Modified responses are very
+ * cheap on github.com, so this can be aggressive — 30 min gives a snappy
+ * notification after a release without making the app feel chatty.
  */
 const WARM_CHECK_THROTTLE_MS = 30 * 60 * 1000;
 
@@ -143,51 +148,9 @@ export function clearUpdateCheckState() {
     localStorage.removeItem(ETAG_KEY);
     localStorage.removeItem(CACHED_RELEASE_KEY);
     localStorage.removeItem(NOTIFIED_VERSION_KEY);
-    localStorage.removeItem(LAST_MANUAL_CHECK_AT_KEY);
   } catch {
     /* ignore */
   }
-}
-
-/**
- * Milliseconds remaining on the manual-check cooldown, or 0 if the user is
- * free to click. UI can disable the button while this is > 0 and render a
- * countdown.
- */
-export function getManualCheckCooldownRemainingMs(): number {
-  if (typeof localStorage === "undefined") return 0;
-  try {
-    const raw = localStorage.getItem(LAST_MANUAL_CHECK_AT_KEY);
-    if (!raw) return 0;
-    const last = Number.parseInt(raw, 10);
-    if (!Number.isFinite(last)) return 0;
-    const remaining = MANUAL_CHECK_COOLDOWN_MS - (Date.now() - last);
-    return remaining > 0 ? remaining : 0;
-  } catch {
-    return 0;
-  }
-}
-
-function markManualChecked() {
-  if (typeof localStorage === "undefined") return;
-  try {
-    localStorage.setItem(LAST_MANUAL_CHECK_AT_KEY, String(Date.now()));
-  } catch {
-    /* ignore */
-  }
-}
-
-/**
- * User-initiated check from a "Check for updates" button. Forces a real
- * (non-throttled) request to GitHub, records the click time so the UI can
- * cool the button down, and reports back whether an update was found so the
- * caller can render feedback ("up to date" vs the regular update banner).
- */
-export async function manualCheckForUpdate(
-  signal?: AbortSignal,
-): Promise<UpdateInfo | null> {
-  markManualChecked();
-  return checkForUpdate({ force: true, signal });
 }
 
 /**
@@ -283,6 +246,107 @@ function writeCache(etag: string | null, release: GithubReleaseResponse) {
 }
 
 /**
+ * From a list of releases, return the one with the highest version tag,
+ * skipping drafts and prereleases. Tie-breaks (same version) prefer the
+ * entry that appears earlier in the list (GitHub feed orders by most-recent
+ * first, so we keep the most recently created).
+ */
+function pickHighestRelease(
+  releases: GithubReleaseResponse[],
+): GithubReleaseResponse | null {
+  let best: GithubReleaseResponse | null = null;
+  let bestTag: string | null = null;
+  for (const r of releases) {
+    if (!r || r.draft || r.prerelease) continue;
+    const tag = typeof r.tag_name === "string" ? r.tag_name : "";
+    if (!tag) continue;
+    if (!bestTag || isNewerVersion(bestTag, tag)) {
+      best = r;
+      bestTag = tag;
+    }
+  }
+  return best;
+}
+
+/**
+ * Parse the GitHub releases Atom feed into the same minimal release shape
+ * the rest of the pipeline already understands. We only look at `<title>`
+ * (the tag, e.g. "v2.2") and the alternate `<link href>` (the release HTML
+ * page). The feed has no prerelease/draft flags, so those default to false —
+ * see the comment on RELEASES_FEED_URL for the trade-off.
+ *
+ * Implemented with a small regex rather than DOMParser because (a) the feed
+ * structure is simple and stable, (b) DOMParser handling of XML namespaces
+ * (`xmlns="http://www.w3.org/2005/Atom"`) is inconsistent across engines,
+ * and (c) we already trust the source.
+ */
+function parseAtomFeed(xml: string): GithubReleaseResponse[] {
+  const out: GithubReleaseResponse[] = [];
+  const entryRegex = /<entry\b[\s\S]*?<\/entry>/g;
+  const titleRegex = /<title[^>]*>([\s\S]*?)<\/title>/;
+  const linkRegex = /<link\b[^>]*\bhref="([^"]+)"/;
+  for (const entry of xml.match(entryRegex) ?? []) {
+    const title = titleRegex.exec(entry)?.[1]?.trim();
+    const href = linkRegex.exec(entry)?.[1]?.trim();
+    if (!title) continue;
+    out.push({
+      tag_name: title,
+      name: title,
+      html_url: href,
+      body: "",
+      draft: false,
+      prerelease: false,
+    });
+  }
+  return out;
+}
+
+/**
+ * Fetch the Atom feed using `CapacitorHttp` on native (which bypasses the
+ * webview's CORS restrictions — github.com doesn't set CORS headers, so a
+ * plain `fetch()` would otherwise be blocked). Falls back to a regular
+ * `fetch()` on web; that will fail in browsers due to CORS, which is fine
+ * because the update-check feature is intended for native installs anyway.
+ */
+async function fetchReleasesFeed(
+  signal: AbortSignal | undefined,
+  cachedEtag: string | null,
+): Promise<{ status: number; xml: string; etag: string | null } | null> {
+  const headers: Record<string, string> = { Accept: "application/atom+xml" };
+  if (cachedEtag) headers["If-None-Match"] = cachedEtag;
+
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const res = await CapacitorHttp.request({
+        method: "GET",
+        url: RELEASES_FEED_URL,
+        headers,
+      });
+      // CapacitorHttp normalizes header names inconsistently across
+      // platforms; check both casings.
+      const respHeaders = (res.headers ?? {}) as Record<string, string>;
+      const etag = respHeaders.ETag ?? respHeaders.etag ?? null;
+      const xml = typeof res.data === "string" ? res.data : "";
+      return { status: res.status, xml, etag };
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    const res = await fetch(RELEASES_FEED_URL, {
+      headers,
+      signal,
+      cache: "no-store",
+    });
+    const xml = await res.text();
+    return { status: res.status, xml, etag: res.headers.get("ETag") };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Direct APK download URL derived from a release tag. Every release follows
  * the same asset-naming convention (`weather-app-{tag}.apk`), so we can build
  * the URL deterministically — no need to dig through the `assets` array.
@@ -319,16 +383,17 @@ function buildUpdateInfo(release: GithubReleaseResponse): UpdateInfo | null {
 }
 
 /**
- * Fetches the latest GitHub release and returns info about it iff it is
- * strictly newer than the running app version AND the user has not already
- * dismissed that specific version. Returns null otherwise (including on
- * network errors — update prompts are best-effort, never blocking).
+ * Fetches the latest GitHub release (via the public Atom feed) and returns
+ * info about it iff it is strictly newer than the running app version AND
+ * the user has not already dismissed that specific version. Returns null
+ * otherwise (including on network errors — update prompts are best-effort,
+ * never blocking).
  *
  * Uses a stored ETag + `If-None-Match` so steady-state checks come back as
- * 304 Not Modified, which doesn't count against GitHub's rate limit. We still
- * re-evaluate the cached payload on every call so things like a fresh install
- * (older APP_VERSION) or a newly un-dismissed version surface immediately
- * without waiting for a release on GitHub to change.
+ * 304 Not Modified, which is essentially free for github.com to serve. We
+ * also re-evaluate the cached payload on every call so things like a fresh
+ * install (older APP_VERSION) or a newly un-dismissed version surface
+ * immediately without waiting for a release on GitHub to change.
  */
 export async function checkForUpdate(
   opts: { force?: boolean; signal?: AbortSignal } = {}
@@ -342,27 +407,22 @@ export async function checkForUpdate(
     return cachedRelease ? buildUpdateInfo(cachedRelease) : null;
   }
 
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github+json",
-  };
-  if (cachedEtag) headers["If-None-Match"] = cachedEtag;
-
   let release: GithubReleaseResponse | null = cachedRelease;
   try {
-    const res = await fetch(LATEST_RELEASE_API, {
-      headers,
-      signal: opts.signal,
-      // Bypass the webview HTTP cache so our manual If-None-Match handling is
-      // authoritative — otherwise the cache may transparently turn a 304 into
-      // a 200 (with the cached body), and we'd never see the real status.
-      cache: "no-store",
-    });
+    const fetched = await fetchReleasesFeed(opts.signal, cachedEtag);
+    if (!fetched) return null;
 
-    if (res.status === 304) {
+    if (fetched.status === 304) {
       // Not modified — nothing to update, fall through using cached release.
-    } else if (res.ok) {
-      release = (await res.json()) as GithubReleaseResponse;
-      writeCache(res.headers.get("ETag"), release);
+    } else if (fetched.status >= 200 && fetched.status < 300) {
+      const parsed = parseAtomFeed(fetched.xml);
+      const picked = pickHighestRelease(parsed);
+      if (picked) {
+        release = picked;
+        // Only persist when we actually found a usable release; an empty feed
+        // (or a parse failure) shouldn't blow away a previously-good cache.
+        writeCache(fetched.etag, picked);
+      }
     } else {
       return null;
     }

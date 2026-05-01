@@ -54,6 +54,10 @@ def computeAppVersion = { ->
 
         def cleanTag = latest.stdout.replaceFirst(/^[vV]/, "")
         def isExactTag = runGit(["describe", "--tags", "--exact-match", "HEAD"]).ok
+        // Refresh the stat cache before checking for dirty — diff-index
+        // otherwise reports false-dirty after tools touch file mtimes
+        // without changing content (Vite, gradle, npm, etc.).
+        runGit(["update-index", "--refresh"])
         def isClean = runGit(["diff-index", "--quiet", "HEAD", "--"]).ok
 
         return (isExactTag && isClean) ? cleanTag : "${bumpLastSegment(cleanTag)}-dev"
