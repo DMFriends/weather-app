@@ -8,12 +8,15 @@ import pkg from './package.json' with { type: 'json' };
  *
  * Preference order:
  *   1. APP_VERSION env var (lets CI override, e.g. from a tag push trigger).
- *   2. Latest reachable git tag. If the build exactly matches that tag with
- *      a clean working tree, we use it verbatim ("2.1"). Otherwise we
- *      auto-bump to the *next* anticipated release with a "-dev" suffix
- *      ("2.0" + pending changes → "2.1-dev"), since dev builds are
- *      conceptually working toward the next version, not lingering on the
- *      previous one.
+ *   2. Latest reachable git tag from `describe --abbrev=0`. If HEAD is exactly
+ *      that tag and the tree is clean, we use it verbatim ("2.1").
+ *      - If HEAD is still *on* that tag but the tree is dirty, we bump the
+ *        last segment ("2.0" dirty → "2.1-dev") so local patches clearly read as
+ *        work toward the *next* release.
+ *      - If HEAD has moved *past* the tag (commits after the release merge),
+ *        we use "{tag}-dev" with **no** bump ("2.1" + descendant commits →
+ *        "2.1-dev", not "2.2-dev") — you stay on the current release line until
+ *        a newer tag wins `describe`.
  *   3. package.json `version` as a last-resort fallback (e.g. shallow clones,
  *      tarball builds, or a fresh repo with no tags yet).
  */
@@ -67,7 +70,8 @@ function resolveAppVersion(): string {
 	const isClean = tryGit(['diff-index', '--quiet', 'HEAD', '--']).ok;
 
 	if (isExactTag && isClean) return cleanTag;
-	return `${bumpLastSegment(cleanTag)}-dev`;
+	if (isExactTag && !isClean) return `${bumpLastSegment(cleanTag)}-dev`;
+	return `${cleanTag}-dev`;
 }
 
 const APP_VERSION = resolveAppVersion();
