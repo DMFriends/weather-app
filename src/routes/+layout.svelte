@@ -6,7 +6,6 @@
 	import {
 		APP_VERSION,
 		checkForUpdate,
-		dismissUpdate,
 		notifyUpdateAvailable,
 		type UpdateInfo,
 	} from "$lib/updateCheck";
@@ -67,7 +66,6 @@
 	}
 
 	function dismissUpdatePrompt() {
-		if (updateInfo) dismissUpdate(updateInfo.latestVersion);
 		updateInfo = null;
 	}
 
