@@ -42,9 +42,10 @@ const LEGACY_ETAG_KEY = "weather-app:updateCheck:etag";
 /** Stable id so the OS coalesces repeat notifications instead of stacking. */
 const UPDATE_NOTIFICATION_ID = 84217;
 /**
- * Minimum spacing between background update checks. No API rate limits on the
- * Atom feed, but we still avoid a network round-trip on every app open. Manual
- * checks use `{ force: true }` and bypass this.
+ * Minimum spacing between background update checks. We hit the public Atom
+ * feed (no rate limits), but still want a sane cadence so we're not making
+ * a network round-trip on every single app open. Manual checks (the footer
+ * button) bypass this via `{ force: true }`.
  */
 const CHECK_THROTTLE_MS = 30 * 60 * 1000;
 
@@ -127,6 +128,9 @@ export function clearUpdateCheckState() {
     localStorage.removeItem(LAST_CHECK_AT_KEY);
     localStorage.removeItem(CACHED_RELEASE_KEY);
     localStorage.removeItem(NOTIFIED_VERSION_KEY);
+
+    // Legacy keys from older builds that we no longer use, but tidy up so
+    // they don't linger forever in the user's localStorage.
     localStorage.removeItem(LEGACY_ETAG_KEY);
     localStorage.removeItem("weather-app:updateCheck:dismissedVersion");
   } catch {
@@ -157,6 +161,9 @@ export async function notifyUpdateAvailable(info: UpdateInfo): Promise<void> {
           id: UPDATE_NOTIFICATION_ID,
           title: "Weather update available",
           body: `v${info.latestVersion} is out — you're on v${info.currentVersion}. Tap to download.`,
+
+          // Stash the APK URL so a tap handler can kick off the download
+          // directly. Android's browser/installer takes it from there.
           extra: { url: info.apkUrl, latestVersion: info.latestVersion },
         },
       ],
@@ -269,9 +276,11 @@ function parseAtomFeed(xml: string): GithubReleaseResponse[] {
 }
 
 /**
- * Fetch the Atom feed using `CapacitorHttp` on native (CORS-safe). Falls back
- * to `fetch()` on web. Every request loads the full feed body — no ETags,
- * no 304 branch.
+ * Fetch the Atom feed using `CapacitorHttp` on native (which bypasses the
+ * webview's CORS restrictions — github.com doesn't set CORS headers, so a
+ * plain `fetch()` would otherwise be blocked). Falls back to a regular
+ * `fetch()` on web; that will fail in browsers due to CORS, which is fine
+ * because the update-check feature is intended for native installs anyway.
  */
 async function fetchReleasesFeed(
   signal: AbortSignal | undefined,
@@ -305,7 +314,14 @@ async function fetchReleasesFeed(
   }
 }
 
+/**
+ * Direct APK download URL derived from a release tag. Every release follows
+ * the same asset-naming convention (`weather-app-{tag}.apk`), so we can build
+ * the URL deterministically — no need to dig through the `assets` array.
+ */
 function apkUrlForTag(tag: string): string {
+  // Preserve the `v` prefix because that's how the tags + asset filenames are
+  // actually named on GitHub (e.g. `v2.0/weather-app-v2.0.apk`).
   const tagSegment = tag.startsWith("v") || tag.startsWith("V") ? tag : `v${tag}`;
   return `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/${tagSegment}/weather-app-${tagSegment}.apk`;
 }
