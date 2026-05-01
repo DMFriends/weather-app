@@ -1,7 +1,17 @@
 <script lang="ts">
 	import { App } from "@capacitor/app";
 	import type { PluginListenerHandle } from "@capacitor/core";
+	import { LocalNotifications } from "@capacitor/local-notifications";
 	import { notifyAppResumed } from "$lib/sessionState";
+	import {
+		APP_VERSION,
+		checkForUpdate,
+		dismissUpdate,
+		getManualCheckCooldownRemainingMs,
+		manualCheckForUpdate,
+		notifyUpdateAvailable,
+		type UpdateInfo,
+	} from "$lib/updateCheck";
 	import { onDestroy, onMount } from "svelte";
 
 	let { children } = $props();
@@ -11,17 +21,107 @@
 	// resume notifications even when the user is on a sub-page (and we don't
 	// re-register on every back-press).
 	let appStateHandle: PluginListenerHandle | undefined;
+	let notificationActionHandle: PluginListenerHandle | undefined;
+
+	let updateInfo: UpdateInfo | null = $state(null);
+	let manualChecking = $state(false);
+	/** "" = no transient feedback, otherwise short toast text shown next to button. */
+	let manualFeedback = $state("");
+	let cooldownRemainingMs = $state(0);
+	let cooldownTimer: ReturnType<typeof setInterval> | undefined;
+
+	function refreshCooldown() {
+		cooldownRemainingMs = getManualCheckCooldownRemainingMs();
+	}
+
+	function formatCooldown(ms: number): string {
+		const totalSeconds = Math.ceil(ms / 1000);
+		if (totalSeconds >= 60) {
+			const minutes = Math.ceil(totalSeconds / 60);
+			return `${minutes} min`;
+		}
+		return `${totalSeconds}s`;
+	}
+
+	async function runUpdateCheck() {
+		try {
+			const info = await checkForUpdate();
+			if (info) {
+				updateInfo = info;
+				void notifyUpdateAvailable(info);
+			}
+		} catch (e) {
+			console.error(e);
+		}
+	}
+
+	async function onCheckForUpdatesClick() {
+		if (manualChecking || cooldownRemainingMs > 0) return;
+		manualChecking = true;
+		manualFeedback = "";
+		try {
+			const info = await manualCheckForUpdate();
+			if (info) {
+				updateInfo = info;
+				void notifyUpdateAvailable(info);
+			} else {
+				manualFeedback = "You're up to date";
+				setTimeout(() => {
+					manualFeedback = "";
+				}, 4000);
+			}
+		} catch (e) {
+			console.error(e);
+			manualFeedback = "Check failed";
+			setTimeout(() => {
+				manualFeedback = "";
+			}, 4000);
+		} finally {
+			manualChecking = false;
+			refreshCooldown();
+		}
+	}
+
+	function dismissUpdatePrompt() {
+		if (updateInfo) dismissUpdate(updateInfo.latestVersion);
+		updateInfo = null;
+	}
 
 	onMount(() => {
+		refreshCooldown();
+		// Tick the cooldown countdown once a minute — that's plenty for a
+		// "X min" label, and avoids a 1-Hz timer wasting battery.
+		cooldownTimer = setInterval(refreshCooldown, 30 * 1000);
+
+		void runUpdateCheck();
+
 		void (async () => {
 			try {
 				appStateHandle = await App.addListener("appStateChange", (state) => {
 					if (state.isActive) {
 						notifyAppResumed();
+						void runUpdateCheck();
 					}
 				});
 			} catch {
 				// App plugin not available on web — nothing to do.
+			}
+
+			try {
+				// Tap on the "update available" notification → open the GitHub
+				// release page in the system browser. Other notifications (the
+				// weather one) carry no `url` extra, so this is a no-op for them.
+				notificationActionHandle = await LocalNotifications.addListener(
+					"localNotificationActionPerformed",
+					(action) => {
+						const url = action?.notification?.extra?.url as string | undefined;
+						if (url && typeof window !== "undefined") {
+							window.open(url, "_blank", "noopener,noreferrer");
+						}
+					},
+				);
+			} catch {
+				// LocalNotifications plugin not available on web — ignore.
 			}
 		})();
 	});
@@ -30,6 +130,14 @@
 		if (appStateHandle) {
 			void appStateHandle.remove();
 			appStateHandle = undefined;
+		}
+		if (notificationActionHandle) {
+			void notificationActionHandle.remove();
+			notificationActionHandle = undefined;
+		}
+		if (cooldownTimer !== undefined) {
+			clearInterval(cooldownTimer);
+			cooldownTimer = undefined;
 		}
 	});
 </script>
@@ -40,8 +148,58 @@
 
 <div class="app">
 	<main class="main">
+		{#if updateInfo}
+			<div class="update-banner" role="status" aria-live="polite">
+				<div class="update-banner-text">
+					<strong>Update available:</strong>
+					<span>v{updateInfo.latestVersion} is out (you're on v{updateInfo.currentVersion}).</span>
+				</div>
+				<div class="update-banner-actions">
+					<a
+						class="update-banner-link"
+						href={updateInfo.apkUrl}
+						target="_blank"
+						rel="noopener noreferrer"
+					>
+						Download
+					</a>
+					<button
+						type="button"
+						class="update-banner-dismiss"
+						onclick={dismissUpdatePrompt}
+						aria-label="Dismiss update notice"
+					>
+						×
+					</button>
+				</div>
+			</div>
+		{/if}
+
 		{@render children()}
 	</main>
+	<footer class="app-footer">
+		<span class="app-version" aria-label="App version">v{APP_VERSION}</span>
+		<button
+			type="button"
+			class="check-updates-btn"
+			onclick={onCheckForUpdatesClick}
+			disabled={manualChecking || cooldownRemainingMs > 0}
+			aria-label="Check for updates"
+		>
+			{#if manualChecking}
+				Checking…
+			{:else if cooldownRemainingMs > 0}
+				Try again in {formatCooldown(cooldownRemainingMs)}
+			{:else}
+				Check for updates
+			{/if}
+		</button>
+		{#if manualFeedback}
+			<span class="check-updates-feedback" role="status" aria-live="polite">
+				{manualFeedback}
+			</span>
+		{/if}
+	</footer>
 </div>
 
 <style>
@@ -119,5 +277,104 @@
 		.main {
 			padding: 18px;
 		}
+	}
+
+	.app-footer {
+		max-width: var(--maxw);
+		margin: 10px auto 0;
+		padding: 4px 8px 8px;
+		text-align: center;
+		color: var(--muted);
+		font-size: 0.75rem;
+		letter-spacing: 0.02em;
+		font-variant-numeric: tabular-nums;
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: center;
+		align-items: center;
+		gap: 6px 10px;
+	}
+
+	.app-version {
+		opacity: 0.85;
+	}
+
+	.check-updates-btn {
+		font: inherit;
+		font-size: 0.75rem;
+		color: var(--muted);
+		background: transparent;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		padding: 3px 10px;
+		cursor: pointer;
+		transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+	}
+
+	.check-updates-btn:hover:not(:disabled) {
+		background: rgba(15, 23, 42, 0.05);
+		color: var(--text);
+		border-color: rgba(15, 23, 42, 0.22);
+	}
+
+	.check-updates-btn:disabled {
+		cursor: default;
+		opacity: 0.6;
+	}
+
+	.check-updates-feedback {
+		opacity: 0.85;
+		font-style: italic;
+	}
+
+	.update-banner {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+		padding: 0.6rem 0.85rem;
+		margin: 0 0 0.75rem;
+		border-radius: 10px;
+		background: #e8f1ff;
+		border: 1px solid #b8d4ff;
+		color: #0b3c8a;
+		font-size: clamp(0.82rem, 0.78rem + 0.25vw, 0.95rem);
+		text-align: left;
+	}
+
+	.update-banner-text {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+		align-items: baseline;
+	}
+
+	.update-banner-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-shrink: 0;
+	}
+
+	.update-banner-link {
+		color: #0b3c8a;
+		font-weight: 600;
+		text-decoration: underline;
+		white-space: nowrap;
+	}
+
+	.update-banner-dismiss {
+		padding: 0 0.5rem;
+		font-size: 1.1rem;
+		line-height: 1;
+		background: transparent;
+		border: 0;
+		color: inherit;
+		cursor: pointer;
+		border-radius: 6px;
+	}
+
+	.update-banner-dismiss:hover {
+		background: rgba(11, 60, 138, 0.1);
 	}
 </style>
