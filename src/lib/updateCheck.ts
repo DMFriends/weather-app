@@ -30,24 +30,26 @@ const RELEASES_FEED_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/rel
 const LATEST_RELEASE_HTML = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 
 const LAST_CHECK_AT_KEY = "weather-app:updateCheck:lastCheckAt";
-const ETAG_KEY = "weather-app:updateCheck:etag";
 const CACHED_RELEASE_KEY = "weather-app:updateCheck:cachedRelease";
 const NOTIFIED_VERSION_KEY = "weather-app:updateCheck:notifiedVersion";
+/**
+ * Legacy localStorage key for an ETag we used back when the update check
+ * issued conditional requests. We've since dropped ETags entirely (the Atom
+ * feed isn't rate-limited and GitHub's lazy ETag regeneration was causing
+ * stale 304s after release changes), so we just garbage-collect this on
+ * every state reset.
+ */
+const LEGACY_ETAG_KEY = "weather-app:updateCheck:etag";
 
 /** Stable id so the OS coalesces repeat notifications instead of stacking. */
 const UPDATE_NOTIFICATION_ID = 84217;
 /**
- * Throttle for the *first* (uncached) check. We're hitting the public Atom
- * feed — no rate limits — but still want a sane cadence so we're not making
- * a network round-trip on every single app open.
+ * Minimum spacing between background update checks. We hit the public Atom
+ * feed (no rate limits), but still want a sane cadence so we're not making
+ * a network round-trip on every single app open. Manual checks (the footer
+ * button) bypass this via `{ force: true }`.
  */
-const COLD_CHECK_THROTTLE_MS = 60 * 60 * 1000;
-/**
- * Throttle once we have an ETag cached. 304 Not Modified responses are very
- * cheap on github.com, so this can be aggressive — 30 min gives a snappy
- * notification after a release without making the app feel chatty.
- */
-const WARM_CHECK_THROTTLE_MS = 30 * 60 * 1000;
+const CHECK_THROTTLE_MS = 30 * 60 * 1000;
 
 export type UpdateInfo = {
   currentVersion: string;
@@ -126,11 +128,11 @@ export function clearUpdateCheckState() {
   if (typeof localStorage === "undefined") return;
   try {
     localStorage.removeItem(LAST_CHECK_AT_KEY);
-    localStorage.removeItem(ETAG_KEY);
     localStorage.removeItem(CACHED_RELEASE_KEY);
     localStorage.removeItem(NOTIFIED_VERSION_KEY);
-    // Legacy: previous builds persisted a "user dismissed this version" flag
-    // here; we no longer use it, but tidy it up if it happens to still exist.
+    // Legacy keys from older builds that we no longer use, but tidy up so
+    // they don't linger forever in the user's localStorage.
+    localStorage.removeItem(LEGACY_ETAG_KEY);
     localStorage.removeItem("weather-app:updateCheck:dismissedVersion");
   } catch {
     /* ignore */
@@ -173,15 +175,14 @@ export async function notifyUpdateAvailable(info: UpdateInfo): Promise<void> {
   }
 }
 
-function shouldSkipCheck(hasEtag: boolean): boolean {
+function shouldSkipCheck(): boolean {
   if (typeof localStorage === "undefined") return false;
   try {
     const raw = localStorage.getItem(LAST_CHECK_AT_KEY);
     if (!raw) return false;
     const last = Number.parseInt(raw, 10);
     if (!Number.isFinite(last)) return false;
-    const throttle = hasEtag ? WARM_CHECK_THROTTLE_MS : COLD_CHECK_THROTTLE_MS;
-    return Date.now() - last < throttle;
+    return Date.now() - last < CHECK_THROTTLE_MS;
   } catch {
     return false;
   }
@@ -196,23 +197,19 @@ function markChecked() {
   }
 }
 
-function readCache(): { etag: string | null; release: GithubReleaseResponse | null } {
-  if (typeof localStorage === "undefined") return { etag: null, release: null };
+function readCachedRelease(): GithubReleaseResponse | null {
+  if (typeof localStorage === "undefined") return null;
   try {
-    const etag = localStorage.getItem(ETAG_KEY);
-    const releaseRaw = localStorage.getItem(CACHED_RELEASE_KEY);
-    const release = releaseRaw ? (JSON.parse(releaseRaw) as GithubReleaseResponse) : null;
-    return { etag, release };
+    const raw = localStorage.getItem(CACHED_RELEASE_KEY);
+    return raw ? (JSON.parse(raw) as GithubReleaseResponse) : null;
   } catch {
-    return { etag: null, release: null };
+    return null;
   }
 }
 
-function writeCache(etag: string | null, release: GithubReleaseResponse) {
+function writeCachedRelease(release: GithubReleaseResponse) {
   if (typeof localStorage === "undefined") return;
   try {
-    if (etag) localStorage.setItem(ETAG_KEY, etag);
-    else localStorage.removeItem(ETAG_KEY);
     // Only persist the fields we actually consume — keeps the entry small and
     // avoids leaking unrelated GitHub metadata into localStorage.
     const trimmed: GithubReleaseResponse = {
@@ -294,10 +291,8 @@ function parseAtomFeed(xml: string): GithubReleaseResponse[] {
  */
 async function fetchReleasesFeed(
   signal: AbortSignal | undefined,
-  cachedEtag: string | null,
-): Promise<{ status: number; xml: string; etag: string | null } | null> {
+): Promise<{ status: number; xml: string } | null> {
   const headers: Record<string, string> = { Accept: "application/atom+xml" };
-  if (cachedEtag) headers["If-None-Match"] = cachedEtag;
 
   if (Capacitor.isNativePlatform()) {
     try {
@@ -306,12 +301,8 @@ async function fetchReleasesFeed(
         url: RELEASES_FEED_URL,
         headers,
       });
-      // CapacitorHttp normalizes header names inconsistently across
-      // platforms; check both casings.
-      const respHeaders = (res.headers ?? {}) as Record<string, string>;
-      const etag = respHeaders.ETag ?? respHeaders.etag ?? null;
       const xml = typeof res.data === "string" ? res.data : "";
-      return { status: res.status, xml, etag };
+      return { status: res.status, xml };
     } catch {
       return null;
     }
@@ -324,7 +315,7 @@ async function fetchReleasesFeed(
       cache: "no-store",
     });
     const xml = await res.text();
-    return { status: res.status, xml, etag: res.headers.get("ETag") };
+    return { status: res.status, xml };
   } catch {
     return null;
   }
@@ -365,54 +356,39 @@ function buildUpdateInfo(release: GithubReleaseResponse): UpdateInfo | null {
 
 /**
  * Fetches the latest GitHub release (via the public Atom feed) and returns
- * info about it iff it is strictly newer than the running app version AND
- * the user has not already dismissed that specific version. Returns null
- * otherwise (including on network errors — update prompts are best-effort,
- * never blocking).
+ * info about it iff it is strictly newer than the running app version.
+ * Returns null otherwise (including on network errors — update prompts are
+ * best-effort, never blocking).
  *
- * Uses a stored ETag + `If-None-Match` so steady-state checks come back as
- * 304 Not Modified, which is essentially free for github.com to serve. We
- * also re-evaluate the cached payload on every call so things like a fresh
- * install (older APP_VERSION) or a newly un-dismissed version surface
- * immediately without waiting for a release on GitHub to change.
+ * Throttles background calls to once per `CHECK_THROTTLE_MS`; pass
+ * `{ force: true }` (e.g. from the manual "check for updates" button) to
+ * bypass the throttle and always hit the network. We also keep a cached
+ * release in localStorage so a freshly-launched app can surface the banner
+ * immediately while the network call is still in flight.
  */
 export async function checkForUpdate(
   opts: { force?: boolean; signal?: AbortSignal } = {}
 ): Promise<UpdateInfo | null> {
-  const { etag: cachedEtag, release: cachedRelease } = readCache();
+  const cachedRelease = readCachedRelease();
 
-  if (!opts.force && shouldSkipCheck(Boolean(cachedEtag))) {
+  if (!opts.force && shouldSkipCheck()) {
     // Still let a previously-cached release surface the banner — useful when
     // the user just upgraded and we already know about a newer release that
-    // they shouldn't be on, or they just un-dismissed by clearing storage.
+    // they shouldn't be on.
     return cachedRelease ? buildUpdateInfo(cachedRelease) : null;
   }
 
   let release: GithubReleaseResponse | null = cachedRelease;
   try {
-    // On a forced check (manual button, app resume), skip the conditional
-    // request and always pull a full body. GitHub's atom feed regenerates
-    // its ETag asynchronously after release changes, so right after you
-    // delete/edit a release the origin can briefly serve a 304 against your
-    // old ETag even though the underlying feed has already moved on. Eating
-    // an extra ~3KB body is well worth never showing a phantom popup.
-    const etagToSend = opts.force ? null : cachedEtag;
-    const fetched = await fetchReleasesFeed(opts.signal, etagToSend);
+    const fetched = await fetchReleasesFeed(opts.signal);
     if (!fetched) return null;
+    if (fetched.status < 200 || fetched.status >= 300) return null;
 
-    if (fetched.status === 304) {
-      // Not modified — nothing to update, fall through using cached release.
-    } else if (fetched.status >= 200 && fetched.status < 300) {
-      const parsed = parseAtomFeed(fetched.xml);
-      const picked = pickHighestRelease(parsed);
-      if (picked) {
-        release = picked;
-        // Only persist when we actually found a usable release; an empty feed
-        // (or a parse failure) shouldn't blow away a previously-good cache.
-        writeCache(fetched.etag, picked);
-      }
-    } else {
-      return null;
+    const parsed = parseAtomFeed(fetched.xml);
+    const picked = pickHighestRelease(parsed);
+    if (picked) {
+      release = picked;
+      writeCachedRelease(picked);
     }
   } catch {
     return null;
