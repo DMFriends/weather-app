@@ -6,15 +6,15 @@ apply plugin: 'com.android.application'
  *
  * Preference order:
  *   1. APP_VERSION env var (CI override — e.g. tag-push triggers).
- *   2. Latest reachable git tag. Used verbatim for exact-tag, clean builds
- *      ("2.1"); otherwise auto-bumped to the next anticipated release with
- *      a "-dev" suffix ("2.0" + pending changes → "2.1-dev").
+ *   2. Latest reachable git tag from `describe --abbrev=0`. Clean when
+ *      `git status --porcelain` is empty → that tag verbatim. Dirty → "-dev",
+ *      bump only when still on the tag (see vite.config.ts).
  *   3. Hard-coded fallback "0.0" so a release-less / shallow checkout still
  *      builds, just with a sentinel version.
  *
  * `versionName` is the human-facing string ("2.1" or "2.1-dev"). `versionCode`
- * is a monotonic integer derived from MAJOR.MINOR (vX.Y → X*100 + Y), since
- * we've committed to a two-number scheme. The "-dev" suffix is ignored for
+ * is a monotonic integer derived from MAJOR.MINOR (vX.Y → X*10000 + Y*100). The
+ * "-dev" suffix is ignored for
  * `versionCode`, so a dev build of v2.1 carries the same code as the eventual
  * v2.1 release. That's intentional — dev builds are typically `adb install -r`'d
  * or installed after uninstalling, not upgraded over.
@@ -54,13 +54,12 @@ def computeAppVersion = { ->
 
         def cleanTag = latest.stdout.replaceFirst(/^[vV]/, "")
         def isExactTag = runGit(["describe", "--tags", "--exact-match", "HEAD"]).ok
-        // Refresh the stat cache before checking for dirty — diff-index
-        // otherwise reports false-dirty after tools touch file mtimes
-        // without changing content (Vite, gradle, npm, etc.).
         runGit(["update-index", "--refresh"])
-        def isClean = runGit(["diff-index", "--quiet", "HEAD", "--"]).ok
+        def isClean = runGit(["status", "--porcelain"]).stdout.isEmpty()
 
-        return (isExactTag && isClean) ? cleanTag : "${bumpLastSegment(cleanTag)}-dev"
+        if (isClean) return cleanTag
+        if (isExactTag) return "${bumpLastSegment(cleanTag)}-dev"
+        return "${cleanTag}-dev"
     } catch (Exception ignored) {
         // git not available, shallow clone, etc.
     }
