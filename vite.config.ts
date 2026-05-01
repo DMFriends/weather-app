@@ -8,15 +8,12 @@ import pkg from './package.json' with { type: 'json' };
  *
  * Preference order:
  *   1. APP_VERSION env var (lets CI override, e.g. from a tag push trigger).
- *   2. Latest reachable git tag from `describe --abbrev=0`. If HEAD is exactly
- *      that tag and the tree is clean, we use it verbatim ("2.1").
- *      - If HEAD is still *on* that tag but the tree is dirty, we bump the
- *        last segment ("2.0" dirty → "2.1-dev") so local patches clearly read as
- *        work toward the *next* release.
- *      - If HEAD has moved *past* the tag (commits after the release merge),
- *        we use "{tag}-dev" with **no** bump ("2.1" + descendant commits →
- *        "2.1-dev", not "2.2-dev") — you stay on the current release line until
- *        a newer tag wins `describe`.
+ *   2. Latest reachable git tag from `describe --abbrev=0` ("2.1"). That is the
+ *      version when `git status --porcelain` is empty (**clean** — no staged /
+ *      unstaged / untracked paths Git would list), whether HEAD is exactly on
+ *      the tag or on a descendant commit still described as `v2.1`.
+ *      Any working-tree noise → `-dev`: still *on* the tag we bump ("2.0"
+ *      dirty → `2.1-dev`); otherwise `{describe}-dev` ("2.1" dirty → `2.1-dev`).
  *   3. package.json `version` as a last-resort fallback (e.g. shallow clones,
  *      tarball builds, or a fresh repo with no tags yet).
  */
@@ -54,23 +51,15 @@ function resolveAppVersion(): string {
 
 	const cleanTag = latest.stdout.replace(/^v/i, '');
 
-	// `--exact-match` exits non-zero when HEAD isn't sitting on a tag.
 	const isExactTag = tryGit(['describe', '--tags', '--exact-match', 'HEAD']).ok;
-	// `diff-index` compares against the index's stat cache (mtime/size). After
-	// any tool — Vite, gradle, npm — has touched a file's mtime without
-	// changing its content, that cache is stale and `diff-index` falsely
-	// reports the working tree as dirty. Refreshing the cache first reconciles
-	// it, the same way `git status` does internally. We discard the output;
-	// `--refresh` itself can exit non-zero when real edits exist, which is
-	// fine (the dirty-check below will then correctly report dirty).
+	// Align stat cache before status so mtime-only noise doesn't false-dirty us.
 	tryGit(['update-index', '--refresh']);
-	// `diff-index --quiet` exits non-zero when there are uncommitted changes
-	// (staged or unstaged). It does NOT consider untracked files, which is
-	// what we want — random scratch files shouldn't taint the version.
-	const isClean = tryGit(['diff-index', '--quiet', 'HEAD', '--']).ok;
+	// Same notion of "dirty" as `git status`: tracked edits and untracked files
+	// (excluding ignored paths).
+	const isClean = tryGit(['status', '--porcelain']).stdout === '';
 
-	if (isExactTag && isClean) return cleanTag;
-	if (isExactTag && !isClean) return `${bumpLastSegment(cleanTag)}-dev`;
+	if (isClean) return cleanTag;
+	if (isExactTag) return `${bumpLastSegment(cleanTag)}-dev`;
 	return `${cleanTag}-dev`;
 }
 

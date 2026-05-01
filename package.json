@@ -7,7 +7,8 @@
 		"dev": "vite dev",
 		"build": "vite build",
 		"preview": "vite preview",
-		"prepare": "svelte-kit sync || echo ''",
+		"prepare": "node scripts/sync-package-version-from-github.mjs && svelte-kit sync || echo ''",
+		"sync-package-version": "node scripts/sync-package-version-from-github.mjs",
 		"postinstall": "patch-package",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
