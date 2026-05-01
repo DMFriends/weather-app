@@ -7,8 +7,6 @@
 		APP_VERSION,
 		checkForUpdate,
 		dismissUpdate,
-		getManualCheckCooldownRemainingMs,
-		manualCheckForUpdate,
 		notifyUpdateAvailable,
 		type UpdateInfo,
 	} from "$lib/updateCheck";
@@ -27,21 +25,6 @@
 	let manualChecking = $state(false);
 	/** "" = no transient feedback, otherwise short toast text shown next to button. */
 	let manualFeedback = $state("");
-	let cooldownRemainingMs = $state(0);
-	let cooldownTimer: ReturnType<typeof setInterval> | undefined;
-
-	function refreshCooldown() {
-		cooldownRemainingMs = getManualCheckCooldownRemainingMs();
-	}
-
-	function formatCooldown(ms: number): string {
-		const totalSeconds = Math.ceil(ms / 1000);
-		if (totalSeconds >= 60) {
-			const minutes = Math.ceil(totalSeconds / 60);
-			return `${minutes} min`;
-		}
-		return `${totalSeconds}s`;
-	}
 
 	async function runUpdateCheck() {
 		try {
@@ -56,11 +39,13 @@
 	}
 
 	async function onCheckForUpdatesClick() {
-		if (manualChecking || cooldownRemainingMs > 0) return;
+		// In-flight guard so spam-clicking doesn't fire parallel requests; no
+		// persistent cooldown — the Atom feed has no rate limit to be polite to.
+		if (manualChecking) return;
 		manualChecking = true;
 		manualFeedback = "";
 		try {
-			const info = await manualCheckForUpdate();
+			const info = await checkForUpdate({ force: true });
 			if (info) {
 				updateInfo = info;
 				void notifyUpdateAvailable(info);
@@ -78,7 +63,6 @@
 			}, 4000);
 		} finally {
 			manualChecking = false;
-			refreshCooldown();
 		}
 	}
 
@@ -88,11 +72,6 @@
 	}
 
 	onMount(() => {
-		refreshCooldown();
-		// Tick the cooldown countdown once a minute — that's plenty for a
-		// "X min" label, and avoids a 1-Hz timer wasting battery.
-		cooldownTimer = setInterval(refreshCooldown, 30 * 1000);
-
 		void runUpdateCheck();
 
 		void (async () => {
@@ -134,10 +113,6 @@
 		if (notificationActionHandle) {
 			void notificationActionHandle.remove();
 			notificationActionHandle = undefined;
-		}
-		if (cooldownTimer !== undefined) {
-			clearInterval(cooldownTimer);
-			cooldownTimer = undefined;
 		}
 	});
 </script>
@@ -183,13 +158,11 @@
 			type="button"
 			class="check-updates-btn"
 			onclick={onCheckForUpdatesClick}
-			disabled={manualChecking || cooldownRemainingMs > 0}
+			disabled={manualChecking}
 			aria-label="Check for updates"
 		>
 			{#if manualChecking}
 				Checking…
-			{:else if cooldownRemainingMs > 0}
-				Try again in {formatCooldown(cooldownRemainingMs)}
 			{:else}
 				Check for updates
 			{/if}
