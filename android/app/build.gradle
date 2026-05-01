@@ -1,5 +1,91 @@
 apply plugin: 'com.android.application'
 
+/**
+ * Resolve the app version at build time, mirroring the logic in
+ * `vite.config.ts` so the JS bundle and the Android manifest agree.
+ *
+ * Preference order:
+ *   1. APP_VERSION env var (CI override — e.g. tag-push triggers).
+ *   2. Latest reachable git tag. Used verbatim for exact-tag, clean builds
+ *      ("2.1"); otherwise auto-bumped to the next anticipated release with
+ *      a "-dev" suffix ("2.0" + pending changes → "2.1-dev").
+ *   3. Hard-coded fallback "0.0" so a release-less / shallow checkout still
+ *      builds, just with a sentinel version.
+ *
+ * `versionName` is the human-facing string ("2.1" or "2.1-dev"). `versionCode`
+ * is a monotonic integer derived from MAJOR.MINOR (vX.Y → X*100 + Y), since
+ * we've committed to a two-number scheme. The "-dev" suffix is ignored for
+ * `versionCode`, so a dev build of v2.1 carries the same code as the eventual
+ * v2.1 release. That's intentional — dev builds are typically `adb install -r`'d
+ * or installed after uninstalling, not upgraded over.
+ */
+def runGit = { List<String> args ->
+    def stdout = new ByteArrayOutputStream()
+    def result = exec {
+        commandLine(["git"] + args)
+        standardOutput = stdout
+        errorOutput = new ByteArrayOutputStream()
+        ignoreExitValue = true
+    }
+    return [ok: result.exitValue == 0, stdout: stdout.toString().trim()]
+}
+
+def bumpLastSegment = { String version ->
+    def parts = version.split(/\./).toList()
+    def lastIdx = parts.size() - 1
+    if (lastIdx < 0) return version
+    try {
+        def n = Integer.parseInt(parts[lastIdx])
+        parts[lastIdx] = String.valueOf(n + 1)
+        return parts.join(".")
+    } catch (NumberFormatException ignored) {
+        return version
+    }
+}
+
+def computeAppVersion = { ->
+    def envVersion = System.getenv("APP_VERSION")
+    if (envVersion?.trim()) {
+        return envVersion.trim().replaceFirst(/^[vV]/, "")
+    }
+    try {
+        def latest = runGit(["describe", "--tags", "--abbrev=0"])
+        if (!latest.ok || !latest.stdout) return "0.0"
+
+        def cleanTag = latest.stdout.replaceFirst(/^[vV]/, "")
+        def isExactTag = runGit(["describe", "--tags", "--exact-match", "HEAD"]).ok
+        // Refresh the stat cache before checking for dirty — diff-index
+        // otherwise reports false-dirty after tools touch file mtimes
+        // without changing content (Vite, gradle, npm, etc.).
+        runGit(["update-index", "--refresh"])
+        def isClean = runGit(["diff-index", "--quiet", "HEAD", "--"]).ok
+
+        return (isExactTag && isClean) ? cleanTag : "${bumpLastSegment(cleanTag)}-dev"
+    } catch (Exception ignored) {
+        // git not available, shallow clone, etc.
+    }
+    return "0.0"
+}
+
+/**
+ * Two-number versioning (X.Y) → versionCode X*10000 + Y*100. Linear and
+ * monotonic (v2.0 → 20000, v2.1 → 20100, v2.10 → 21000, v3.0 → 30000) and
+ * well within Android's 2,100,000,000 versionCode ceiling. The 100-stride
+ * leaves room for unexpected hotfix bumps later if the scheme ever expands.
+ * Suffixes like "-dev" are stripped before parsing.
+ */
+def computeVersionCode = { String version ->
+    def parts = version.split(/[^0-9]+/).findAll { it }.collect { Integer.parseInt(it) }
+    while (parts.size() < 2) parts << 0
+    def major = parts[0]
+    def minor = parts[1]
+    return major * 10000 + minor * 100
+}
+
+def appVersionName = computeAppVersion()
+def appVersionCode = Math.max(1, computeVersionCode(appVersionName))
+println "Building Weather App v${appVersionName} (versionCode ${appVersionCode})"
+
 android {
     namespace = "com.example.weather"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,8 +93,8 @@ android {
         applicationId "com.example.weather"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode appVersionCode
+        versionName appVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
