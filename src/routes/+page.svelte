@@ -4,7 +4,6 @@
     import { readForecastCache, writeForecastCache } from "$lib/weatherForecastCache";
     import { clearWeatherNotification, syncWeatherNotification } from "$lib/weatherNotification";
     import { clearNotifiedAlerts, syncAlertNotifications } from "$lib/weatherAlertNotifications";
-    import { checkForUpdate, dismissUpdate, type UpdateInfo } from "$lib/updateCheck";
     import {
       buildDaily,
       buildHourly,
@@ -275,12 +274,9 @@
 
     /**
      * Refresh callback the layout invokes when the app resumes from background.
-     * Forces a fresh fetch (resetting the bootstrap flag is handled by the
-     * caller in `sessionState`) and also re-runs the update check.
      */
     async function onAppResumed() {
       await loadWeatherOnOpenOrResume();
-      void runUpdateCheck();
     }
 
     onDestroy(() => {
@@ -305,26 +301,10 @@
         }
       } else {
         void loadWeatherOnOpenOrResume();
-        void runUpdateCheck();
       }
     });
 
     let locationPending = $state(false);
-    let updateInfo: UpdateInfo | null = $state(null);
-
-    async function runUpdateCheck() {
-      try {
-        const info = await checkForUpdate();
-        if (info) updateInfo = info;
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    function dismissUpdatePrompt() {
-      if (updateInfo) dismissUpdate(updateInfo.latestVersion);
-      updateInfo = null;
-    }
 
     let lastNotifiedLocationKey: string | null = null;
 
@@ -553,33 +533,6 @@
 </script>
 
 <div class="page">
-  {#if updateInfo}
-    <div class="update-banner" role="status" aria-live="polite">
-      <div class="update-banner-text">
-        <strong>Update available:</strong>
-        <span>v{updateInfo.latestVersion} is out (you're on v{updateInfo.currentVersion}).</span>
-      </div>
-      <div class="update-banner-actions">
-        <a
-          class="update-banner-link"
-          href={updateInfo.releaseUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          View release
-        </a>
-        <button
-          type="button"
-          class="update-banner-dismiss"
-          onclick={dismissUpdatePrompt}
-          aria-label="Dismiss update notice"
-        >
-          ×
-        </button>
-      </div>
-    </div>
-  {/if}
-
   <h1>Weather App</h1>
 
   <div class="search">
@@ -697,57 +650,6 @@
     font-size: clamp(1.15rem, 0.95rem + 1.2vw, 1.6rem);
     line-height: 1.25;
     margin: 0 0 0.5rem;
-  }
-
-  .update-banner {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    padding: 0.6rem 0.85rem;
-    margin: 0 0 0.75rem;
-    border-radius: 10px;
-    background: #e8f1ff;
-    border: 1px solid #b8d4ff;
-    color: #0b3c8a;
-    font-size: clamp(0.82rem, 0.78rem + 0.25vw, 0.95rem);
-    text-align: left;
-  }
-
-  .update-banner-text {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-    align-items: baseline;
-  }
-
-  .update-banner-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-shrink: 0;
-  }
-
-  .update-banner-link {
-    color: #0b3c8a;
-    font-weight: 600;
-    text-decoration: underline;
-    white-space: nowrap;
-  }
-
-  .update-banner-dismiss {
-    padding: 0 0.5rem;
-    font-size: 1.1rem;
-    line-height: 1;
-    background: transparent;
-    border: 0;
-    color: inherit;
-    cursor: pointer;
-    border-radius: 6px;
-  }
-
-  .update-banner-dismiss:hover {
-    background: rgba(11, 60, 138, 0.1);
   }
 
   .search {

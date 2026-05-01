@@ -29,26 +29,24 @@ const GITHUB_REPO = "weather-app";
 const RELEASES_FEED_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases.atom`;
 const LATEST_RELEASE_HTML = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 
-const DISMISSED_VERSION_KEY = "weather-app:updateCheck:dismissedVersion";
 const LAST_CHECK_AT_KEY = "weather-app:updateCheck:lastCheckAt";
-const ETAG_KEY = "weather-app:updateCheck:etag";
 const CACHED_RELEASE_KEY = "weather-app:updateCheck:cachedRelease";
 const NOTIFIED_VERSION_KEY = "weather-app:updateCheck:notifiedVersion";
+/**
+ * Legacy localStorage key for conditional requests (`If-None-Match`). We drop
+ * ETags entirely — the Atom feed isn't rate limited and stale 304 semantics
+ * were hiding fresh releases briefly after tag/release edits on GitHub.
+ */
+const LEGACY_ETAG_KEY = "weather-app:updateCheck:etag";
 
 /** Stable id so the OS coalesces repeat notifications instead of stacking. */
 const UPDATE_NOTIFICATION_ID = 84217;
 /**
- * Throttle for the *first* (uncached) check. We're hitting the public Atom
- * feed — no rate limits — but still want a sane cadence so we're not making
- * a network round-trip on every single app open.
+ * Minimum spacing between background update checks. No API rate limits on the
+ * Atom feed, but we still avoid a network round-trip on every app open. Manual
+ * checks use `{ force: true }` and bypass this.
  */
-const COLD_CHECK_THROTTLE_MS = 60 * 60 * 1000;
-/**
- * Throttle once we have an ETag cached. 304 Not Modified responses are very
- * cheap on github.com, so this can be aggressive — 30 min gives a snappy
- * notification after a release without making the app feel chatty.
- */
-const WARM_CHECK_THROTTLE_MS = 30 * 60 * 1000;
+const CHECK_THROTTLE_MS = 30 * 60 * 1000;
 
 export type UpdateInfo = {
   currentVersion: string;
@@ -101,24 +99,6 @@ export function isNewerVersion(current: string, latest: string): boolean {
   return false;
 }
 
-function getDismissedVersion(): string | null {
-  if (typeof localStorage === "undefined") return null;
-  try {
-    return localStorage.getItem(DISMISSED_VERSION_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function dismissUpdate(version: string) {
-  if (typeof localStorage === "undefined") return;
-  try {
-    localStorage.setItem(DISMISSED_VERSION_KEY, version);
-  } catch {
-    /* storage may be unavailable (private mode, etc.) — ignore. */
-  }
-}
-
 function getNotifiedVersion(): string | null {
   if (typeof localStorage === "undefined") return null;
   try {
@@ -138,16 +118,17 @@ function setNotifiedVersion(version: string) {
 }
 
 /**
- * Forces an immediate re-check by clearing throttle + cache state. Handy in
- * the dev console and when wiring a manual "check for updates" UI.
+ * Clears throttle + cached release keys. Useful from the dev console or when
+ * testing update flows.
  */
 export function clearUpdateCheckState() {
   if (typeof localStorage === "undefined") return;
   try {
     localStorage.removeItem(LAST_CHECK_AT_KEY);
-    localStorage.removeItem(ETAG_KEY);
     localStorage.removeItem(CACHED_RELEASE_KEY);
     localStorage.removeItem(NOTIFIED_VERSION_KEY);
+    localStorage.removeItem(LEGACY_ETAG_KEY);
+    localStorage.removeItem("weather-app:updateCheck:dismissedVersion");
   } catch {
     /* ignore */
   }
@@ -176,8 +157,6 @@ export async function notifyUpdateAvailable(info: UpdateInfo): Promise<void> {
           id: UPDATE_NOTIFICATION_ID,
           title: "Weather update available",
           body: `v${info.latestVersion} is out — you're on v${info.currentVersion}. Tap to download.`,
-          // Stash the APK URL so a tap handler can kick off the download
-          // directly. Android's browser/installer takes it from there.
           extra: { url: info.apkUrl, latestVersion: info.latestVersion },
         },
       ],
@@ -189,15 +168,14 @@ export async function notifyUpdateAvailable(info: UpdateInfo): Promise<void> {
   }
 }
 
-function shouldSkipCheck(hasEtag: boolean): boolean {
+function shouldSkipCheck(): boolean {
   if (typeof localStorage === "undefined") return false;
   try {
     const raw = localStorage.getItem(LAST_CHECK_AT_KEY);
     if (!raw) return false;
     const last = Number.parseInt(raw, 10);
     if (!Number.isFinite(last)) return false;
-    const throttle = hasEtag ? WARM_CHECK_THROTTLE_MS : COLD_CHECK_THROTTLE_MS;
-    return Date.now() - last < throttle;
+    return Date.now() - last < CHECK_THROTTLE_MS;
   } catch {
     return false;
   }
@@ -212,25 +190,19 @@ function markChecked() {
   }
 }
 
-function readCache(): { etag: string | null; release: GithubReleaseResponse | null } {
-  if (typeof localStorage === "undefined") return { etag: null, release: null };
+function readCachedRelease(): GithubReleaseResponse | null {
+  if (typeof localStorage === "undefined") return null;
   try {
-    const etag = localStorage.getItem(ETAG_KEY);
-    const releaseRaw = localStorage.getItem(CACHED_RELEASE_KEY);
-    const release = releaseRaw ? (JSON.parse(releaseRaw) as GithubReleaseResponse) : null;
-    return { etag, release };
+    const raw = localStorage.getItem(CACHED_RELEASE_KEY);
+    return raw ? (JSON.parse(raw) as GithubReleaseResponse) : null;
   } catch {
-    return { etag: null, release: null };
+    return null;
   }
 }
 
-function writeCache(etag: string | null, release: GithubReleaseResponse) {
+function writeCachedRelease(release: GithubReleaseResponse) {
   if (typeof localStorage === "undefined") return;
   try {
-    if (etag) localStorage.setItem(ETAG_KEY, etag);
-    else localStorage.removeItem(ETAG_KEY);
-    // Only persist the fields we actually consume — keeps the entry small and
-    // avoids leaking unrelated GitHub metadata into localStorage.
     const trimmed: GithubReleaseResponse = {
       tag_name: release.tag_name,
       name: release.name,
@@ -274,11 +246,6 @@ function pickHighestRelease(
  * (the tag, e.g. "v2.2") and the alternate `<link href>` (the release HTML
  * page). The feed has no prerelease/draft flags, so those default to false —
  * see the comment on RELEASES_FEED_URL for the trade-off.
- *
- * Implemented with a small regex rather than DOMParser because (a) the feed
- * structure is simple and stable, (b) DOMParser handling of XML namespaces
- * (`xmlns="http://www.w3.org/2005/Atom"`) is inconsistent across engines,
- * and (c) we already trust the source.
  */
 function parseAtomFeed(xml: string): GithubReleaseResponse[] {
   const out: GithubReleaseResponse[] = [];
@@ -302,18 +269,14 @@ function parseAtomFeed(xml: string): GithubReleaseResponse[] {
 }
 
 /**
- * Fetch the Atom feed using `CapacitorHttp` on native (which bypasses the
- * webview's CORS restrictions — github.com doesn't set CORS headers, so a
- * plain `fetch()` would otherwise be blocked). Falls back to a regular
- * `fetch()` on web; that will fail in browsers due to CORS, which is fine
- * because the update-check feature is intended for native installs anyway.
+ * Fetch the Atom feed using `CapacitorHttp` on native (CORS-safe). Falls back
+ * to `fetch()` on web. Every request loads the full feed body — no ETags,
+ * no 304 branch.
  */
 async function fetchReleasesFeed(
   signal: AbortSignal | undefined,
-  cachedEtag: string | null,
-): Promise<{ status: number; xml: string; etag: string | null } | null> {
+): Promise<{ status: number; xml: string } | null> {
   const headers: Record<string, string> = { Accept: "application/atom+xml" };
-  if (cachedEtag) headers["If-None-Match"] = cachedEtag;
 
   if (Capacitor.isNativePlatform()) {
     try {
@@ -322,12 +285,8 @@ async function fetchReleasesFeed(
         url: RELEASES_FEED_URL,
         headers,
       });
-      // CapacitorHttp normalizes header names inconsistently across
-      // platforms; check both casings.
-      const respHeaders = (res.headers ?? {}) as Record<string, string>;
-      const etag = respHeaders.ETag ?? respHeaders.etag ?? null;
       const xml = typeof res.data === "string" ? res.data : "";
-      return { status: res.status, xml, etag };
+      return { status: res.status, xml };
     } catch {
       return null;
     }
@@ -340,20 +299,13 @@ async function fetchReleasesFeed(
       cache: "no-store",
     });
     const xml = await res.text();
-    return { status: res.status, xml, etag: res.headers.get("ETag") };
+    return { status: res.status, xml };
   } catch {
     return null;
   }
 }
 
-/**
- * Direct APK download URL derived from a release tag. Every release follows
- * the same asset-naming convention (`weather-app-{tag}.apk`), so we can build
- * the URL deterministically — no need to dig through the `assets` array.
- */
 function apkUrlForTag(tag: string): string {
-  // Preserve the `v` prefix because that's how the tags + asset filenames are
-  // actually named on GitHub (e.g. `v2.0/weather-app-v2.0.apk`).
   const tagSegment = tag.startsWith("v") || tag.startsWith("V") ? tag : `v${tag}`;
   return `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/${tagSegment}/weather-app-${tagSegment}.apk`;
 }
@@ -365,9 +317,6 @@ function buildUpdateInfo(release: GithubReleaseResponse): UpdateInfo | null {
   if (!latestTag) return null;
 
   if (!isNewerVersion(APP_VERSION, latestTag)) return null;
-
-  const dismissed = getDismissedVersion();
-  if (dismissed && !isNewerVersion(dismissed, latestTag)) return null;
 
   return {
     currentVersion: APP_VERSION,
@@ -383,48 +332,33 @@ function buildUpdateInfo(release: GithubReleaseResponse): UpdateInfo | null {
 }
 
 /**
- * Fetches the latest GitHub release (via the public Atom feed) and returns
- * info about it iff it is strictly newer than the running app version AND
- * the user has not already dismissed that specific version. Returns null
- * otherwise (including on network errors — update prompts are best-effort,
- * never blocking).
- *
- * Uses a stored ETag + `If-None-Match` so steady-state checks come back as
- * 304 Not Modified, which is essentially free for github.com to serve. We
- * also re-evaluate the cached payload on every call so things like a fresh
- * install (older APP_VERSION) or a newly un-dismissed version surface
- * immediately without waiting for a release on GitHub to change.
+ * Fetches releases from the Atom feed and returns update info iff a release is
+ * strictly newer than the running app. Throttled in the background; pass
+ * `{ force: true }` for a fresh network read. We still keep the last parsed
+ * release in localStorage so a throttled check can surface a known upgrade
+ * without hitting the network — that is not HTTP caching; every non-throttled
+ * fetch always downloads the current feed XML.
  */
 export async function checkForUpdate(
-  opts: { force?: boolean; signal?: AbortSignal } = {}
+  opts: { force?: boolean; signal?: AbortSignal } = {},
 ): Promise<UpdateInfo | null> {
-  const { etag: cachedEtag, release: cachedRelease } = readCache();
+  const cachedRelease = readCachedRelease();
 
-  if (!opts.force && shouldSkipCheck(Boolean(cachedEtag))) {
-    // Still let a previously-cached release surface the banner — useful when
-    // the user just upgraded and we already know about a newer release that
-    // they shouldn't be on, or they just un-dismissed by clearing storage.
+  if (!opts.force && shouldSkipCheck()) {
     return cachedRelease ? buildUpdateInfo(cachedRelease) : null;
   }
 
   let release: GithubReleaseResponse | null = cachedRelease;
   try {
-    const fetched = await fetchReleasesFeed(opts.signal, cachedEtag);
+    const fetched = await fetchReleasesFeed(opts.signal);
     if (!fetched) return null;
+    if (fetched.status < 200 || fetched.status >= 300) return null;
 
-    if (fetched.status === 304) {
-      // Not modified — nothing to update, fall through using cached release.
-    } else if (fetched.status >= 200 && fetched.status < 300) {
-      const parsed = parseAtomFeed(fetched.xml);
-      const picked = pickHighestRelease(parsed);
-      if (picked) {
-        release = picked;
-        // Only persist when we actually found a usable release; an empty feed
-        // (or a parse failure) shouldn't blow away a previously-good cache.
-        writeCache(fetched.etag, picked);
-      }
-    } else {
-      return null;
+    const parsed = parseAtomFeed(fetched.xml);
+    const picked = pickHighestRelease(parsed);
+    if (picked) {
+      release = picked;
+      writeCachedRelease(picked);
     }
   } catch {
     return null;

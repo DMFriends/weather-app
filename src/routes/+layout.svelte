@@ -6,7 +6,6 @@
 	import {
 		APP_VERSION,
 		checkForUpdate,
-		dismissUpdate,
 		notifyUpdateAvailable,
 		type UpdateInfo,
 	} from "$lib/updateCheck";
@@ -67,8 +66,17 @@
 	}
 
 	function dismissUpdatePrompt() {
-		if (updateInfo) dismissUpdate(updateInfo.latestVersion);
+		// In-memory only — we deliberately don't persist a "dismissed" version
+		// anywhere, so the next check (auto on resume, or manual via the
+		// footer button) re-surfaces the popup if the update is still out.
 		updateInfo = null;
+	}
+
+	function onWindowKeydown(e: KeyboardEvent) {
+		if (updateInfo && e.key === "Escape") {
+			e.preventDefault();
+			dismissUpdatePrompt();
+		}
 	}
 
 	onMount(() => {
@@ -121,35 +129,10 @@
 	<link rel="icon" href="/favicon.png" />
 </svelte:head>
 
+<svelte:window onkeydown={onWindowKeydown} />
+
 <div class="app">
 	<main class="main">
-		{#if updateInfo}
-			<div class="update-banner" role="status" aria-live="polite">
-				<div class="update-banner-text">
-					<strong>Update available:</strong>
-					<span>v{updateInfo.latestVersion} is out (you're on v{updateInfo.currentVersion}).</span>
-				</div>
-				<div class="update-banner-actions">
-					<a
-						class="update-banner-link"
-						href={updateInfo.apkUrl}
-						target="_blank"
-						rel="noopener noreferrer"
-					>
-						Download
-					</a>
-					<button
-						type="button"
-						class="update-banner-dismiss"
-						onclick={dismissUpdatePrompt}
-						aria-label="Dismiss update notice"
-					>
-						×
-					</button>
-				</div>
-			</div>
-		{/if}
-
 		{@render children()}
 	</main>
 	<footer class="app-footer">
@@ -174,6 +157,57 @@
 		{/if}
 	</footer>
 </div>
+
+{#if updateInfo}
+	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+	<div
+		class="update-modal-backdrop"
+		onclick={dismissUpdatePrompt}
+		role="presentation"
+	>
+		<div
+			class="update-modal"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="update-modal-title"
+			aria-describedby="update-modal-body"
+			tabindex="-1"
+			onclick={(e) => e.stopPropagation()}
+		>
+			<button
+				type="button"
+				class="update-modal-close"
+				onclick={dismissUpdatePrompt}
+				aria-label="Close update notice"
+			>
+				×
+			</button>
+			<h2 id="update-modal-title" class="update-modal-title">Update available</h2>
+			<p id="update-modal-body" class="update-modal-body">
+				<strong>v{updateInfo.latestVersion}</strong> is out — you're currently on
+				<strong>v{updateInfo.currentVersion}</strong>.
+			</p>
+			<div class="update-modal-actions">
+				<button
+					type="button"
+					class="update-modal-btn update-modal-btn-secondary"
+					onclick={dismissUpdatePrompt}
+				>
+					Not now
+				</button>
+				<a
+					class="update-modal-btn update-modal-btn-primary"
+					href={updateInfo.apkUrl}
+					target="_blank"
+					rel="noopener noreferrer"
+					onclick={dismissUpdatePrompt}
+				>
+					Download
+				</a>
+			</div>
+		</div>
+	</div>
+{/if}
 
 <style>
 	:global(:root) {
@@ -300,54 +334,128 @@
 		font-style: italic;
 	}
 
-	.update-banner {
+	.update-modal-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 1000;
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		gap: 0.75rem;
-		padding: 0.6rem 0.85rem;
-		margin: 0 0 0.75rem;
-		border-radius: 10px;
-		background: #e8f1ff;
-		border: 1px solid #b8d4ff;
-		color: #0b3c8a;
-		font-size: clamp(0.82rem, 0.78rem + 0.25vw, 0.95rem);
+		justify-content: center;
+		padding: 16px;
+		background: rgba(15, 23, 42, 0.45);
+		backdrop-filter: blur(4px);
+		-webkit-backdrop-filter: blur(4px);
+		animation: update-modal-backdrop-in 160ms ease-out;
+	}
+
+	.update-modal {
+		position: relative;
+		width: min(420px, 100%);
+		max-height: calc(100dvh - 32px);
+		overflow-y: auto;
+		background: var(--surface);
+		color: var(--text);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		box-shadow: var(--shadow);
+		padding: 22px 22px 18px;
 		text-align: left;
+		animation: update-modal-in 180ms ease-out;
 	}
 
-	.update-banner-text {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.35rem;
-		align-items: baseline;
-	}
-
-	.update-banner-actions {
-		display: flex;
+	.update-modal-close {
+		position: absolute;
+		top: 8px;
+		right: 8px;
+		width: 32px;
+		height: 32px;
+		display: inline-flex;
 		align-items: center;
-		gap: 0.5rem;
-		flex-shrink: 0;
-	}
-
-	.update-banner-link {
-		color: #0b3c8a;
-		font-weight: 600;
-		text-decoration: underline;
-		white-space: nowrap;
-	}
-
-	.update-banner-dismiss {
-		padding: 0 0.5rem;
-		font-size: 1.1rem;
+		justify-content: center;
+		font-size: 1.25rem;
 		line-height: 1;
 		background: transparent;
 		border: 0;
-		color: inherit;
+		color: var(--muted);
 		cursor: pointer;
-		border-radius: 6px;
+		border-radius: 8px;
+		transition: background 120ms ease, color 120ms ease;
 	}
 
-	.update-banner-dismiss:hover {
-		background: rgba(11, 60, 138, 0.1);
+	.update-modal-close:hover {
+		background: rgba(15, 23, 42, 0.06);
+		color: var(--text);
+	}
+
+	.update-modal-title {
+		margin: 0 28px 10px 0;
+		font-size: 1.15rem;
+		line-height: 1.25;
+	}
+
+	.update-modal-body {
+		margin: 0 0 18px;
+		font-size: 0.95rem;
+		line-height: 1.45;
+		color: var(--muted);
+	}
+
+	.update-modal-body strong {
+		color: var(--text);
+		font-weight: 600;
+	}
+
+	.update-modal-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
+	.update-modal-btn {
+		font: inherit;
+		font-size: 0.9rem;
+		font-weight: 500;
+		padding: 8px 16px;
+		border-radius: 10px;
+		cursor: pointer;
+		text-decoration: none;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-height: 36px;
+		transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+	}
+
+	.update-modal-btn-secondary {
+		background: transparent;
+		border: 1px solid var(--border);
+		color: var(--muted);
+	}
+
+	.update-modal-btn-secondary:hover {
+		background: rgba(15, 23, 42, 0.05);
+		color: var(--text);
+		border-color: rgba(15, 23, 42, 0.22);
+	}
+
+	.update-modal-btn-primary {
+		background: #0b3c8a;
+		border: 1px solid #0b3c8a;
+		color: #fff;
+	}
+
+	.update-modal-btn-primary:hover {
+		background: #0a3478;
+	}
+
+	@keyframes update-modal-backdrop-in {
+		from { opacity: 0; }
+		to { opacity: 1; }
+	}
+
+	@keyframes update-modal-in {
+		from { opacity: 0; transform: translateY(8px) scale(0.98); }
+		to { opacity: 1; transform: translateY(0) scale(1); }
 	}
 </style>
