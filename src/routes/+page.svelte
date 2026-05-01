@@ -274,8 +274,6 @@
 
     /**
      * Refresh callback the layout invokes when the app resumes from background.
-     * Forces a fresh fetch (resetting the bootstrap flag is handled by the
-     * caller in `sessionState`). The update check is owned by the layout.
      */
     async function onAppResumed() {
       await loadWeatherOnOpenOrResume();
