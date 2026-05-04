@@ -18,6 +18,11 @@
       type WeatherApiResponse,
     } from "$lib/forecast";
     import {
+      androidBackgroundNeedsPrompt,
+      persistAndroidBackgroundLocationDismiss,
+      requestAndroidBackgroundLocation,
+    } from "$lib/androidBackgroundLocation";
+    import {
       isBootstrapped,
       markBootstrapped,
       registerHomeRefresh,
@@ -106,6 +111,12 @@
     let lastWatchLat: number | null = null;
     let lastWatchLon: number | null = null;
     let lastWatchFetchAt = 0;
+
+    let locationPending = $state(false);
+
+    let bgLocPromptOpen = $state(false);
+    let bgPromptOfferedThisSession = $state(false);
+    let bgConsentBusy = $state(false);
 
     // Horizontal accuracy thresholds (meters). Precise mode rejects very coarse
     // fixes to avoid weather for a random tower/IP centroid. Approximate mode
@@ -332,39 +343,58 @@
       }
     }
 
-    /**
-     * Refresh callback the layout invokes when the app resumes from background.
-     */
-    async function onAppResumed() {
-      await loadWeatherOnOpenOrResume();
+    /** After foreground GPS succeeds, optionally offer ACCESS_BACKGROUND_LOCATION (Android Q+). */
+    async function maybeOfferAndroidBackgroundLocation() {
+      if (bgPromptOfferedThisSession) return;
+      bgPromptOfferedThisSession = true;
+      try {
+        if (await androidBackgroundNeedsPrompt()) bgLocPromptOpen = true;
+      } catch {
+        /* native plugin unavailable or web — ignore */
+      }
     }
 
-    onDestroy(() => {
-      if (suggestTimer) clearTimeout(suggestTimer);
-      void stopGpsWatch();
-      unregisterHomeRefresh(onAppResumed);
-    });
-
-    onMount(() => {
-      registerHomeRefresh(onAppResumed);
-
-      if (isBootstrapped()) {
-        // Coming back from a sub-page (Hourly / Daily / Alerts) within the same
-        // app session — repaint from cache and resume GPS tracking, but don't
-        // hit the network again.
-        const cached = readForecastCache<WeatherApiResponse>();
-        if (cached) {
-          suppressSuggestOnce = true;
-          city = cached.response.location.name;
-          applyForecastResponse(cached.response, { notify: false });
-          void startGpsWatch(cached.response.location.lat, cached.response.location.lon);
-        }
-      } else {
-        void loadWeatherOnOpenOrResume();
+    /** While the rationale sheet is visible, hide it if Settings granted “Always”. */
+    async function closeBgPromptIfGranted() {
+      if (!bgLocPromptOpen) return;
+      try {
+        if (!(await androidBackgroundNeedsPrompt())) bgLocPromptOpen = false;
+      } catch {
+        /* ignore */
       }
-    });
+    }
 
-    let locationPending = $state(false);
+    async function confirmBackgroundLocationPrompt() {
+      bgConsentBusy = true;
+      try {
+        await requestAndroidBackgroundLocation();
+      } catch (e) {
+        console.error(e);
+      } finally {
+        bgConsentBusy = false;
+      }
+      try {
+        if (!(await androidBackgroundNeedsPrompt())) {
+          bgLocPromptOpen = false;
+          return;
+        }
+      } catch {
+        /* noop */
+      }
+      persistAndroidBackgroundLocationDismiss();
+      bgLocPromptOpen = false;
+    }
+
+    function declineBackgroundLocationPrompt() {
+      persistAndroidBackgroundLocationDismiss();
+      bgLocPromptOpen = false;
+    }
+
+    /** Layout invokes when the native app resumes from background. */
+    async function onAppResumed() {
+      await loadWeatherOnOpenOrResume();
+      await closeBgPromptIfGranted();
+    }
 
     let lastNotifiedLocationKey: string | null = null;
 
@@ -422,6 +452,7 @@
       city = resp.location.name;
       applyForecastResponse(resp, { notify });
       await startGpsWatch(latitude, longitude);
+      void maybeOfferAndroidBackgroundLocation();
       return true;
     }
 
@@ -496,6 +527,28 @@
         loading = false;
       }
     }
+
+    onDestroy(() => {
+      if (suggestTimer) clearTimeout(suggestTimer);
+      void stopGpsWatch();
+      unregisterHomeRefresh(onAppResumed);
+    });
+
+    onMount(() => {
+      registerHomeRefresh(onAppResumed);
+
+      if (isBootstrapped()) {
+        const cached = readForecastCache<WeatherApiResponse>();
+        if (cached) {
+          suppressSuggestOnce = true;
+          city = cached.response.location.name;
+          applyForecastResponse(cached.response, { notify: false });
+          void startGpsWatch(cached.response.location.lat, cached.response.location.lon);
+        }
+      } else {
+        void loadWeatherOnOpenOrResume();
+      }
+    });
 
     $effect(() => {
       const q = city.trim();
@@ -647,6 +700,42 @@
 
   {#if error}
     <p style="color:red">{error}</p>
+  {/if}
+
+  {#if bgLocPromptOpen}
+    <div
+      class="bg-loc-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="bg-loc-title"
+    >
+      <div class="bg-loc-dialog">
+        <h2 id="bg-loc-title" class="bg-loc-title">Use location in the background?</h2>
+        <p class="bg-loc-body">
+          If you allow location <strong>all the time</strong>, the optional weather notification and
+          alert checks can update when the app is not open. You can change this anytime in system
+          settings.
+        </p>
+        <div class="bg-loc-actions">
+          <button
+            type="button"
+            class="bg-loc-primary"
+            disabled={bgConsentBusy}
+            onclick={() => void confirmBackgroundLocationPrompt()}
+          >
+            {bgConsentBusy ? "Opening…" : "Continue"}
+          </button>
+          <button
+            type="button"
+            class="bg-loc-secondary"
+            disabled={bgConsentBusy}
+            onclick={declineBackgroundLocationPrompt}
+          >
+            Not now
+          </button>
+        </div>
+      </div>
+    </div>
   {/if}
 
   {#if data}
@@ -882,5 +971,77 @@
   .nav-meta {
     font-size: clamp(0.75rem, 0.7rem + 0.2vw, 0.85rem);
     opacity: 0.75;
+  }
+
+  .bg-loc-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: grid;
+    place-items: center;
+    padding: 1rem;
+    background: rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+  }
+
+  .bg-loc-dialog {
+    max-width: min(440px, 100%);
+    padding: clamp(1rem, 3vw, 1.35rem);
+    border-radius: 14px;
+    background: white;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.2);
+    border: 1px solid #e0e0e0;
+    text-align: left;
+  }
+
+  .bg-loc-title {
+    font-size: clamp(1.05rem, 0.92rem + 0.65vw, 1.35rem);
+    margin: 0 0 0.6rem;
+    line-height: 1.25;
+    text-align: center;
+  }
+
+  .bg-loc-body {
+    margin: 0 0 1rem;
+    font-size: clamp(0.85rem, 0.82rem + 0.35vw, 0.96rem);
+    line-height: 1.45;
+    color: #333;
+    text-align: left;
+  }
+
+  .bg-loc-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin-top: 0.5rem;
+  }
+
+  .bg-loc-actions button {
+    min-width: 7rem;
+  }
+
+  button.bg-loc-primary {
+    background: #1565c0;
+    border-color: #0d47a1;
+    color: #fff;
+    font-weight: 600;
+  }
+
+  button.bg-loc-secondary {
+    background: #f3f3f3;
+    border: 1px solid #cfcfcf;
+  }
+
+  button.bg-loc-primary:disabled,
+  button.bg-loc-secondary:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+  }
+
+  button.bg-loc-primary:not(:disabled):hover {
+    background: #185a9f;
+    border-color: #0d47a1;
   }
 </style>
