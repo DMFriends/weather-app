@@ -843,7 +843,7 @@
     padding: 0.85rem 0.5rem;
     border-radius: 12px;
     background: #f3f3f3;
-    border: 1px solid rgba(15, 23, 42, 0.08);
+    border: 1px solid #9ca3af;
     color: inherit;
     text-decoration: none;
     transition: transform 0.08s ease, background 0.12s ease, border-color 0.12s ease;
@@ -851,7 +851,7 @@
 
   .nav-link:hover {
     background: #ececec;
-    border-color: rgba(15, 23, 42, 0.18);
+    border-color: #4b5563;
   }
 
   .nav-link:active {
@@ -860,12 +860,13 @@
 
   .nav-link.has-alerts {
     background: #fff4e5;
-    border-color: #f5b977;
+    border: 1px solid #d97706;
     color: #7a3d00;
   }
 
   .nav-link.has-alerts:hover {
     background: #ffe9cc;
+    border-color: #b45309;
   }
 
   .nav-icon {
