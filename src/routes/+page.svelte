@@ -118,9 +118,9 @@
     let bgPromptOfferedThisSession = $state(false);
     let bgConsentBusy = $state(false);
 
-    // Horizontal accuracy thresholds (meters). Precise mode rejects very coarse
-    // fixes to avoid weather for a random tower/IP centroid. Approximate mode
-    // (Android “approximate only”, or web coarse permission) allows larger radii.
+    // Horizontal accuracy thresholds (meters). Precise mode (fine permission) rejects
+    // very coarse fixes. Approximate mode is used when fine is not granted, or as a
+    // fallback when a precise fix cannot be obtained in time / within max radius.
     const PRECISE_TARGET_M = 50;
     const PRECISE_ACCEPTABLE_M = 200;
     const PRECISE_MAX_M = 2000;
@@ -161,14 +161,28 @@
       };
     }
 
-    /** Android 12+: coarse granted but fine denied — user chose approximate location only. */
-    async function isApproximateLocationOnly(): Promise<boolean> {
+    /**
+     * True when fine/precise location is not granted — use coarse / approximate strategy only.
+     * (Includes Android “approximate only” when coarse is granted and fine is not.)
+     */
+    async function useApproximateLocationStrategy(): Promise<boolean> {
       try {
         const p = await Geolocation.checkPermissions();
-        return p.coarseLocation === "granted" && p.location !== "granted";
+        return p.location !== "granted";
       } catch {
         return false;
       }
+    }
+
+    /** Precise session failed in a way where trying low-accuracy is reasonable (no permission denial, etc.). */
+    function shouldFallbackToApproximateAfterPreciseFailure(err: unknown): boolean {
+      const msg = (err instanceof Error ? err.message : String(err)).trim();
+      if (msg === "Timed out waiting for an accurate location") return true;
+      if (msg === "Location accuracy too low") return true;
+      const lower = msg.toLowerCase();
+      if (lower.includes("position unavailable")) return true;
+      if (lower.includes("timed out") || lower.endsWith("timeout")) return true;
+      return false;
     }
 
     /**
@@ -254,20 +268,21 @@
     }
 
     /**
-     * Prefer precise fixes when fine location is allowed; otherwise use coarse
-     * thresholds. On web, coarse permission cannot be told apart from precise via
-     * Capacitor — if the precise pass yields nothing under PRECISE_MAX_M, retry
-     * with approximate strategy once.
+     * With fine/precise permission, keep high-accuracy until a fix cannot be
+     * obtained in time / within max radius; then fall back to approximate once.
      */
     async function getAccurateInitialPosition(): Promise<GeoPosition> {
-      const approxOnly = await isApproximateLocationOnly();
-      if (approxOnly) {
+      const useApprox = await useApproximateLocationStrategy();
+      if (useApprox) {
         return await getInitialPositionWithStrategy(true);
       }
       try {
         return await getInitialPositionWithStrategy(false);
-      } catch {
-        return await getInitialPositionWithStrategy(true);
+      } catch (e) {
+        if (shouldFallbackToApproximateAfterPreciseFailure(e)) {
+          return await getInitialPositionWithStrategy(true);
+        }
+        throw e;
       }
     }
 
@@ -290,8 +305,8 @@
       lastWatchLon = initialLon;
       lastWatchFetchAt = Date.now();
 
-      const approxOnly = await isApproximateLocationOnly();
-      const s = strategyForApproximateMode(approxOnly);
+      const useApprox = await useApproximateLocationStrategy();
+      const s = strategyForApproximateMode(useApprox);
 
       try {
         locationWatchId = await Geolocation.watchPosition(
