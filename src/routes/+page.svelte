@@ -107,24 +107,65 @@
     let lastWatchLon: number | null = null;
     let lastWatchFetchAt = 0;
 
-    // Horizontal accuracy thresholds (meters). Anything worse than MAX is almost
-    // certainly a Wi-Fi/cell/IP guess and will be ignored outright to avoid
-    // showing weather for a random city.
-    const TARGET_ACCURACY_M = 50;
-    const ACCEPTABLE_ACCURACY_M = 200;
-    const MAX_ACCURACY_M = 2000;
+    // Horizontal accuracy thresholds (meters). Precise mode rejects very coarse
+    // fixes to avoid weather for a random tower/IP centroid. Approximate mode
+    // (Android “approximate only”, or web coarse permission) allows larger radii.
+    const PRECISE_TARGET_M = 50;
+    const PRECISE_ACCEPTABLE_M = 200;
+    const PRECISE_MAX_M = 2000;
+
+    const APPROX_TARGET_M = 10_000;
+    const APPROX_ACCEPTABLE_M = 25_000;
+    const APPROX_MAX_M = 150_000;
 
     type GeoPosition = Awaited<ReturnType<typeof Geolocation.getCurrentPosition>>;
 
+    type PositionStrategy = {
+      enableHighAccuracy: boolean;
+      targetM: number;
+      acceptableM: number;
+      maxM: number;
+      initialWaitMs: number;
+      maxWaitMs: number;
+    };
+
+    function strategyForApproximateMode(approximate: boolean): PositionStrategy {
+      if (approximate) {
+        return {
+          enableHighAccuracy: false,
+          targetM: APPROX_TARGET_M,
+          acceptableM: APPROX_ACCEPTABLE_M,
+          maxM: APPROX_MAX_M,
+          initialWaitMs: 5_000,
+          maxWaitMs: 15_000,
+        };
+      }
+      return {
+        enableHighAccuracy: true,
+        targetM: PRECISE_TARGET_M,
+        acceptableM: PRECISE_ACCEPTABLE_M,
+        maxM: PRECISE_MAX_M,
+        initialWaitMs: 8_000,
+        maxWaitMs: 20_000,
+      };
+    }
+
+    /** Android 12+: coarse granted but fine denied — user chose approximate location only. */
+    async function isApproximateLocationOnly(): Promise<boolean> {
+      try {
+        const p = await Geolocation.checkPermissions();
+        return p.coarseLocation === "granted" && p.location !== "granted";
+      } catch {
+        return false;
+      }
+    }
+
     /**
-     * Stream high-accuracy GPS fixes and return the most accurate one within a
-     * deadline. Using watchPosition instead of a single getCurrentPosition call
-     * lets us discard the first cold-start fix (which is often a wildly wrong
-     * Wi-Fi / cell-tower guess) and wait for a real GPS lock.
+     * Stream fixes and return the best within deadlines. Uses watchPosition when
+     * available so cold-start network guesses can be skipped in precise mode.
      */
-    async function getAccurateInitialPosition(): Promise<GeoPosition> {
-      const INITIAL_WAIT_MS = 8_000; // after this, accept best-so-far if acceptable
-      const MAX_WAIT_MS = 20_000; // overall deadline before giving up
+    async function getInitialPositionWithStrategy(approximate: boolean): Promise<GeoPosition> {
+      const s = strategyForApproximateMode(approximate);
 
       return await new Promise<GeoPosition>((resolve, reject) => {
         let best: GeoPosition | null = null;
@@ -160,27 +201,25 @@
         (async () => {
           try {
             watchId = await Geolocation.watchPosition(
-              { enableHighAccuracy: true, maximumAge: 0, timeout: MAX_WAIT_MS },
+              { enableHighAccuracy: s.enableHighAccuracy, maximumAge: 0, timeout: s.maxWaitMs },
               (position, err) => {
                 if (err || !position) return;
                 const acc = position.coords.accuracy;
-                if (!Number.isFinite(acc) || acc > MAX_ACCURACY_M) return;
+                if (!Number.isFinite(acc) || acc > s.maxM) return;
                 if (!best || acc < best.coords.accuracy) best = position;
-                if (acc <= TARGET_ACCURACY_M) finish(position);
+                if (acc <= s.targetM) finish(position);
               }
             );
           } catch {
-            // Web fallback: watchPosition may be unavailable or rejected; try a
-            // single high-accuracy read and still enforce the accuracy gate.
             try {
               const pos = await Geolocation.getCurrentPosition({
-                enableHighAccuracy: true,
+                enableHighAccuracy: s.enableHighAccuracy,
                 maximumAge: 0,
-                timeout: MAX_WAIT_MS,
+                timeout: s.maxWaitMs,
               });
               if (
                 Number.isFinite(pos.coords.accuracy) &&
-                pos.coords.accuracy <= MAX_ACCURACY_M
+                pos.coords.accuracy <= s.maxM
               ) {
                 finish(pos);
               } else {
@@ -193,14 +232,32 @@
         })();
 
         initialTimer = setTimeout(() => {
-          if (best && best.coords.accuracy <= ACCEPTABLE_ACCURACY_M) finish(best);
-        }, INITIAL_WAIT_MS);
+          if (best && best.coords.accuracy <= s.acceptableM) finish(best);
+        }, s.initialWaitMs);
 
         overallTimer = setTimeout(() => {
           if (best) finish(best);
           else fail(new Error("Timed out waiting for an accurate location"));
-        }, MAX_WAIT_MS);
+        }, s.maxWaitMs);
       });
+    }
+
+    /**
+     * Prefer precise fixes when fine location is allowed; otherwise use coarse
+     * thresholds. On web, coarse permission cannot be told apart from precise via
+     * Capacitor — if the precise pass yields nothing under PRECISE_MAX_M, retry
+     * with approximate strategy once.
+     */
+    async function getAccurateInitialPosition(): Promise<GeoPosition> {
+      const approxOnly = await isApproximateLocationOnly();
+      if (approxOnly) {
+        return await getInitialPositionWithStrategy(true);
+      }
+      try {
+        return await getInitialPositionWithStrategy(false);
+      } catch {
+        return await getInitialPositionWithStrategy(true);
+      }
     }
 
     async function stopGpsWatch() {
@@ -222,10 +279,13 @@
       lastWatchLon = initialLon;
       lastWatchFetchAt = Date.now();
 
+      const approxOnly = await isApproximateLocationOnly();
+      const s = strategyForApproximateMode(approxOnly);
+
       try {
         locationWatchId = await Geolocation.watchPosition(
           {
-            enableHighAccuracy: true,
+            enableHighAccuracy: s.enableHighAccuracy,
             timeout: 25000,
             maximumAge: 10000,
             interval: 30000,
@@ -233,10 +293,10 @@
           },
           async (position, err) => {
             if (err || !position) return;
-            // Ignore coarse / network-only fixes — a single bad reading here
-            // would otherwise re-fetch weather for a totally wrong city.
+            // Reject fixes worse than our ceiling so one wildly uncertain reading
+            // does not jump the forecast to the wrong area.
             const acc = position.coords.accuracy;
-            if (!Number.isFinite(acc) || acc > MAX_ACCURACY_M) return;
+            if (!Number.isFinite(acc) || acc > s.maxM) return;
             const lat = position.coords.latitude;
             const lon = position.coords.longitude;
             if (lastWatchLat === null || lastWatchLon === null) {
@@ -330,16 +390,17 @@
     async function ensureLocationPermission(): Promise<boolean> {
       try {
         const checked = await Geolocation.checkPermissions();
-        if (checked.location !== "granted") {
-          try {
-            const requested = await Geolocation.requestPermissions();
-            if (requested.location !== "granted") {
-              error = "Location permission denied. Enter a city to get weather.";
-              return false;
-            }
-          } catch {
-            // Web: requestPermissions is unimplemented; getCurrentPosition will trigger the browser prompt.
+        if (checked.location === "granted" || checked.coarseLocation === "granted") {
+          return true;
+        }
+        try {
+          const requested = await Geolocation.requestPermissions();
+          if (requested.location !== "granted" && requested.coarseLocation !== "granted") {
+            error = "Location permission denied. Enter a city to get weather.";
+            return false;
           }
+        } catch {
+          // Web: requestPermissions is unimplemented; getCurrentPosition will trigger the browser prompt.
         }
       } catch {
         // checkPermissions unavailable in this environment — still try the position read.
