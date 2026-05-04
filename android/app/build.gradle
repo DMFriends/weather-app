@@ -7,8 +7,8 @@ apply plugin: 'com.android.application'
  * Preference order:
  *   1. APP_VERSION env var (CI override — e.g. tag-push triggers).
  *   2. Latest reachable git tag from `describe --abbrev=0`. Clean when
- *      `git status --porcelain` is empty → that tag verbatim. Dirty → "-dev",
- *      bump only when still on the tag (see vite.config.ts).
+ *      `git status --porcelain` is empty → that tag verbatim. Dirty → bump last
+ *      segment + "-dev" (mirrors vite.config.ts).
  *   3. Hard-coded fallback "0.0" so a release-less / shallow checkout still
  *      builds, just with a sentinel version.
  *
@@ -53,13 +53,11 @@ def computeAppVersion = { ->
         if (!latest.ok || !latest.stdout) return "0.0"
 
         def cleanTag = latest.stdout.replaceFirst(/^[vV]/, "")
-        def isExactTag = runGit(["describe", "--tags", "--exact-match", "HEAD"]).ok
         runGit(["update-index", "--refresh"])
         def isClean = runGit(["status", "--porcelain"]).stdout.isEmpty()
 
         if (isClean) return cleanTag
-        if (isExactTag) return "${bumpLastSegment(cleanTag)}-dev"
-        return "${cleanTag}-dev"
+        return "${bumpLastSegment(cleanTag)}-dev"
     } catch (Exception ignored) {
         // git not available, shallow clone, etc.
     }

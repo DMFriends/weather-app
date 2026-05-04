@@ -8,12 +8,10 @@ import pkg from './package.json' with { type: 'json' };
  *
  * Preference order:
  *   1. APP_VERSION env var (lets CI override, e.g. from a tag push trigger).
- *   2. Latest reachable git tag from `describe --abbrev=0` ("2.1"). That is the
- *      version when `git status --porcelain` is empty (**clean** — no staged /
- *      unstaged / untracked paths Git would list), whether HEAD is exactly on
- *      the tag or on a descendant commit still described as `v2.1`.
- *      Any working-tree noise → `-dev`: still *on* the tag we bump ("2.0"
- *      dirty → `2.1-dev`); otherwise `{describe}-dev` ("2.1" dirty → `2.1-dev`).
+ *   2. Latest reachable git tag from `describe --abbrev=0`. Clean tree → that
+ *      tag verbatim (HEAD may be on the tag or on descendant commits). Dirty tree
+ *      → bump last segment + `-dev` (e.g. reachable tag `v2.0` + local changes →
+ *      `2.1-dev`, including when HEAD is past that tag).
  *   3. package.json `version` as a last-resort fallback (e.g. shallow clones,
  *      tarball builds, or a fresh repo with no tags yet).
  */
@@ -51,7 +49,6 @@ function resolveAppVersion(): string {
 
 	const cleanTag = latest.stdout.replace(/^v/i, '');
 
-	const isExactTag = tryGit(['describe', '--tags', '--exact-match', 'HEAD']).ok;
 	// Align stat cache before status so mtime-only noise doesn't false-dirty us.
 	tryGit(['update-index', '--refresh']);
 	// Same notion of "dirty" as `git status`: tracked edits and untracked files
@@ -59,8 +56,7 @@ function resolveAppVersion(): string {
 	const isClean = tryGit(['status', '--porcelain']).stdout === '';
 
 	if (isClean) return cleanTag;
-	if (isExactTag) return `${bumpLastSegment(cleanTag)}-dev`;
-	return `${cleanTag}-dev`;
+	return `${bumpLastSegment(cleanTag)}-dev`;
 }
 
 const APP_VERSION = resolveAppVersion();
