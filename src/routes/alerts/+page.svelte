@@ -1,11 +1,20 @@
 <script lang="ts">
+  import { browser } from "$app/environment";
+  import { page } from "$app/state";
   import { readForecastCache } from "$lib/weatherForecastCache";
-  import { getAlerts, type WeatherApiAlert, type WeatherApiResponse } from "$lib/forecast";
+  import {
+    getAlerts,
+    weatherAlertDedupKey,
+    type WeatherApiAlert,
+    type WeatherApiResponse,
+  } from "$lib/forecast";
   import { onMount } from "svelte";
 
   let locationName = $state("");
   let alerts: WeatherApiAlert[] = $state([]);
   let loaded = $state(false);
+
+  let highlightedKey = $derived(page.url.searchParams.get("alert") ?? "");
 
   function formatRange(effective?: string, expires?: string) {
     const fmt = (s?: string) => {
@@ -43,21 +52,38 @@
     }
     loaded = true;
   });
+
+  $effect(() => {
+    if (!browser || !loaded || !highlightedKey) return;
+    const key = highlightedKey;
+    queueMicrotask(() => {
+      const esc =
+        typeof CSS !== "undefined" && typeof CSS.escape === "function"
+          ? CSS.escape(key)
+          : key.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const el = document.querySelector(`[data-alert-key="${esc}"]`);
+      if (!(el instanceof HTMLElement)) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.querySelectorAll("details").forEach((d) => {
+        (d as HTMLDetailsElement).open = true;
+      });
+    });
+  });
 </script>
 
 <div class="page">
   <header class="page-header">
     <a class="back-link" href="/" aria-label="Back to home">← Back</a>
-    <h1>Weather alerts</h1>
-    <span class="header-spacer" aria-hidden="true"></span>
+    <div class="page-header-intro">
+      <h1>Weather alerts</h1>
+      {#if locationName}
+        <p class="location">
+          {locationName}
+          {#if loaded}· {alerts.length} active{/if}
+        </p>
+      {/if}
+    </div>
   </header>
-
-  {#if locationName}
-    <p class="location">
-      {locationName}
-      {#if loaded}· {alerts.length} active{/if}
-    </p>
-  {/if}
 
   {#if !loaded}
     <p class="empty">Loading…</p>
@@ -69,8 +95,12 @@
     </div>
   {:else}
     <ul class="alert-list">
-      {#each alerts as a, idx (idx)}
-        <li class="alert-card {severityClass(a.severity)}">
+      {#each alerts as a, idx (weatherAlertDedupKey(a))}
+        <li
+          class="alert-card {severityClass(a.severity)}"
+          class:highlight={weatherAlertDedupKey(a) === highlightedKey}
+          data-alert-key={weatherAlertDedupKey(a)}
+        >
           <div class="alert-head">
             <span class="event">{a.event || a.headline || "Weather alert"}</span>
             {#if a.severity}
@@ -129,18 +159,22 @@
 
   .page-header {
     display: flex;
-    align-items: center;
-    gap: 0.6rem;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.65rem;
+  }
+
+  .page-header-intro {
+    text-align: center;
   }
 
   .page-header h1 {
-    flex: 1;
-    text-align: center;
-    margin: 0.2rem 0;
+    margin: 0;
     font-size: clamp(1.2rem, 1rem + 1.2vw, 1.6rem);
   }
 
   .back-link {
+    align-self: flex-start;
     text-decoration: none;
     color: inherit;
     padding: 0.35rem 0.6rem;
@@ -154,14 +188,8 @@
     background: #ececec;
   }
 
-  /* Mirrors back-link width so the title stays visually centered. */
-  .header-spacer {
-    width: 4.5rem;
-  }
-
   .location {
-    margin: 0.25rem 0 0.75rem;
-    text-align: center;
+    margin: 0.35rem 0 0.75rem;
     opacity: 0.75;
     font-size: 0.95rem;
   }
@@ -207,6 +235,11 @@
     border-radius: 12px;
     border: 1px solid;
     background: #fff;
+  }
+
+  .alert-card.highlight {
+    outline: 3px solid rgba(37, 99, 235, 0.55);
+    outline-offset: 3px;
   }
 
   .severity-extreme {

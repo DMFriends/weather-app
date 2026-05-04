@@ -1,7 +1,9 @@
 <script lang="ts">
+	import { goto } from "$app/navigation";
 	import { App } from "@capacitor/app";
 	import type { PluginListenerHandle } from "@capacitor/core";
 	import { LocalNotifications } from "@capacitor/local-notifications";
+	import { setAlertNotificationsAppActive } from "$lib/weatherAlertNotifications";
 	import { notifyAppResumed } from "$lib/sessionState";
 	import {
 		APP_VERSION,
@@ -75,25 +77,43 @@
 		void (async () => {
 			try {
 				appStateHandle = await App.addListener("appStateChange", (state) => {
+					setAlertNotificationsAppActive(state.isActive);
 					if (state.isActive) {
 						notifyAppResumed();
 						void runUpdateCheck();
 					}
 				});
+				try {
+					const st = await App.getState();
+					setAlertNotificationsAppActive(st.isActive);
+				} catch {
+					/* noop */
+				}
 			} catch {
 				// App plugin not available on web — nothing to do.
 			}
 
 			try {
-				// Tap on the "update available" notification → open the GitHub
-				// release page in the system browser. Other notifications (the
-				// weather one) carry no `url` extra, so this is a no-op for them.
+				// Update notification → APK URL in browser. Weather alert notifications
+				// carry `weatherAlertKey` → open /alerts with that alert highlighted.
 				notificationActionHandle = await LocalNotifications.addListener(
 					"localNotificationActionPerformed",
 					(action) => {
-						const url = action?.notification?.extra?.url as string | undefined;
-						if (url && typeof window !== "undefined") {
+						if (typeof window === "undefined") return;
+						const extra = action?.notification?.extra as
+							| Record<string, unknown>
+							| undefined;
+						const url = typeof extra?.url === "string" ? extra.url : undefined;
+						const alertKey =
+							typeof extra?.weatherAlertKey === "string"
+								? extra.weatherAlertKey
+								: undefined;
+						if (url) {
 							window.open(url, "_blank", "noopener,noreferrer");
+							return;
+						}
+						if (alertKey) {
+							void goto(`/alerts?alert=${encodeURIComponent(alertKey)}`);
 						}
 					},
 				);

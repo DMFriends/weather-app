@@ -1,11 +1,15 @@
 import { Capacitor } from "@capacitor/core";
 import { LocalNotifications } from "@capacitor/local-notifications";
-import type { WeatherApiAlert } from "$lib/forecast";
+import { weatherAlertDedupKey, type WeatherApiAlert } from "$lib/forecast";
 
 /**
  * Posts a one-shot Capacitor LocalNotification per active weather alert. We
  * keep a localStorage-backed dedup set keyed by event/headline/effective so
  * the same alert isn't re-fired every time the forecast cache refreshes.
+ *
+ * Notifications are scheduled only while the app is in the background so we
+ * don't interrupt someone who already has the UI open. The latest alert list is
+ * stored on each sync and flushed when the app moves to the background.
  */
 
 const STORAGE_KEY = "weather-app:notified-alerts:v1";
@@ -21,10 +25,21 @@ type NotifiedMap = Record<string, number>; // key -> expires-at epoch ms
 
 let alertChannelEnsured = false;
 
-function alertKey(a: WeatherApiAlert): string {
-  return [a.event, a.headline, a.effective, a.expires]
-    .map((s) => (typeof s === "string" ? s.trim() : ""))
-    .join("|");
+/** `true` while the user might see the in-app alert UI (Capacitor `AppState.isActive`). */
+let appForegroundActive = true;
+
+let lastAlertsSnapshot: WeatherApiAlert[] = [];
+
+/**
+ * Wire from `App.addListener('appStateChange')`: pass `state.isActive`.
+ * When the app goes inactive we schedule any pending alert notifications from
+ * the last forecast sync.
+ */
+export function setAlertNotificationsAppActive(isActive: boolean): void {
+  appForegroundActive = isActive;
+  if (!isActive) {
+    void schedulePendingAlertNotifications(lastAlertsSnapshot);
+  }
 }
 
 function readNotified(): NotifiedMap {
@@ -105,18 +120,30 @@ function buildBody(a: WeatherApiAlert): string {
 }
 
 export async function syncAlertNotifications(alerts: WeatherApiAlert[]): Promise<void> {
+  lastAlertsSnapshot = alerts ?? [];
   if (!Capacitor.isNativePlatform()) return;
-  if (!alerts || !alerts.length) return;
+  if (appForegroundActive) return;
+  await schedulePendingAlertNotifications(lastAlertsSnapshot);
+}
 
+async function ensureNotifyPermissions(): Promise<boolean> {
   try {
     const checked = await LocalNotifications.checkPermissions();
     if (checked.display !== "granted") {
       const requested = await LocalNotifications.requestPermissions();
-      if (requested.display !== "granted") return;
+      return requested.display === "granted";
     }
+    return true;
   } catch {
-    return;
+    return false;
   }
+}
+
+async function schedulePendingAlertNotifications(alerts: WeatherApiAlert[]): Promise<void> {
+  if (!Capacitor.isNativePlatform()) return;
+  if (!alerts?.length) return;
+
+  if (!(await ensureNotifyPermissions())) return;
 
   await ensureAlertChannel();
 
@@ -124,11 +151,16 @@ export async function syncAlertNotifications(alerts: WeatherApiAlert[]): Promise
   pruneExpired(notified);
 
   const now = Date.now();
-  const toSchedule: { id: number; title: string; body: string }[] = [];
+  const toSchedule: {
+    id: number;
+    title: string;
+    body: string;
+    extra: Record<string, string>;
+  }[] = [];
   const usedIds = new Set<number>();
 
   for (const a of alerts) {
-    const key = alertKey(a);
+    const key = weatherAlertDedupKey(a);
     if (!key || key === "|||") continue;
     if (notified[key]) continue;
 
@@ -145,6 +177,7 @@ export async function syncAlertNotifications(alerts: WeatherApiAlert[]): Promise
       id,
       title: a.event || a.headline || "Weather alert",
       body: buildBody(a),
+      extra: { weatherAlertKey: key },
     });
   }
 
@@ -157,6 +190,7 @@ export async function syncAlertNotifications(alerts: WeatherApiAlert[]): Promise
         title: n.title,
         body: n.body,
         channelId: ALERT_CHANNEL_ID,
+        extra: n.extra,
       })),
     });
     writeNotified(notified);

@@ -702,6 +702,13 @@
     <p style="color:red">{error}</p>
   {/if}
 
+  {#if locationPending}
+    <div class="location-loading" role="status" aria-live="polite" aria-busy="true">
+      <span class="location-loading-spinner" aria-hidden="true"></span>
+      <span class="location-loading-label">Loading…</span>
+    </div>
+  {/if}
+
   {#if bgLocPromptOpen}
     <div
       class="bg-loc-backdrop"
@@ -908,6 +915,43 @@
     padding: 1rem;
     border-radius: 12px;
     background: #f3f3f3;
+  }
+
+  .location-loading {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    margin: 0.65rem auto 0;
+    font-size: clamp(0.85rem, 0.8rem + 0.25vw, 0.95rem);
+    opacity: 0.88;
+    max-width: 100%;
+  }
+
+  .location-loading-spinner {
+    box-sizing: border-box;
+    width: 1.05em;
+    height: 1.05em;
+    flex-shrink: 0;
+    border: 2px solid #d4d4d4;
+    border-top-color: #555;
+    border-radius: 50%;
+    animation: location-spin 0.65s linear infinite;
+  }
+
+  @keyframes location-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .location-loading-spinner {
+      animation: none;
+      border-color: #888;
+      border-top-color: #888;
+      opacity: 0.9;
+    }
   }
 
   .forecast-nav {

@@ -4,7 +4,6 @@
     buildDaily,
     formatTemp,
     loadInitialTempUnit,
-    TEMP_UNIT_STORAGE_KEY,
     type DailyForecast,
     type TempUnit,
     type WeatherApiResponse,
@@ -15,11 +14,6 @@
   let daily: DailyForecast[] = $state([]);
   let tempUnit: TempUnit = $state(loadInitialTempUnit());
   let loaded = $state(false);
-
-  $effect(() => {
-    if (typeof localStorage === "undefined") return;
-    localStorage.setItem(TEMP_UNIT_STORAGE_KEY, tempUnit);
-  });
 
   onMount(() => {
     const cached = readForecastCache<WeatherApiResponse>();
@@ -34,19 +28,13 @@
 <div class="page">
   <header class="page-header">
     <a class="back-link" href="/" aria-label="Back to home">← Back</a>
-    <h1>Daily forecast</h1>
-    <label class="unit-select">
-      <span class="unit-label">Units</span>
-      <select bind:value={tempUnit} aria-label="Temperature units">
-        <option value="F">°F</option>
-        <option value="C">°C</option>
-      </select>
-    </label>
+    <div class="page-header-intro">
+      <h1>Daily forecast</h1>
+      {#if locationName}
+        <p class="location">{locationName} · next {daily.length || 10} days</p>
+      {/if}
+    </div>
   </header>
-
-  {#if locationName}
-    <p class="location">{locationName} · next {daily.length || 10} days</p>
-  {/if}
 
   {#if !loaded}
     <p class="empty">Loading…</p>
@@ -86,19 +74,22 @@
 
   .page-header {
     display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    flex-wrap: wrap;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.65rem;
+  }
+
+  .page-header-intro {
+    text-align: center;
   }
 
   .page-header h1 {
-    flex: 1;
-    text-align: center;
-    margin: 0.2rem 0;
+    margin: 0;
     font-size: clamp(1.2rem, 1rem + 1.2vw, 1.6rem);
   }
 
   .back-link {
+    align-self: flex-start;
     text-decoration: none;
     color: inherit;
     padding: 0.35rem 0.6rem;
@@ -112,28 +103,8 @@
     background: #ececec;
   }
 
-  .unit-select {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    font-size: 0.85rem;
-  }
-
-  .unit-label {
-    opacity: 0.7;
-  }
-
-  .unit-select select {
-    padding: 0.3rem 0.4rem;
-    border-radius: 6px;
-    border: 1px solid #ccc;
-    background: white;
-    font-size: inherit;
-  }
-
   .location {
-    margin: 0.25rem 0 0.75rem;
-    text-align: center;
+    margin: 0.35rem 0 0.75rem;
     opacity: 0.75;
     font-size: 0.95rem;
   }

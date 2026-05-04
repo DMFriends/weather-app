@@ -220,3 +220,10 @@ export function currentPrecipChanceFromHourly(
 export function getAlerts(resp: WeatherApiResponse | null | undefined): WeatherApiAlert[] {
   return resp?.alerts?.alert ?? [];
 }
+
+/** Stable key for the same logical alert across refreshes (notifications, deep links). */
+export function weatherAlertDedupKey(a: WeatherApiAlert): string {
+  return [a.event, a.headline, a.effective, a.expires]
+    .map((s) => (typeof s === "string" ? s.trim() : ""))
+    .join("|");
+}
