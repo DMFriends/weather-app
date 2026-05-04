@@ -61,7 +61,7 @@ On iOS, the notification refreshes only when the app is in the foreground.
 
 ### Screenshots
 
-You can find screenshots of the app [here](https://github.com/DMFriends/weather-app/tree/main/screenshots) so you can see what it looks like. Feel free to submit feedback by submitting an [issue](https://github.com/DMFriends/weather-app/issues/new)
+You can find screenshots of the app [here](https://github.com/DMFriends/weather-app/tree/main/screenshots) so you can see what it looks like. Feel free to submit feedback by submitting an [issue](https://github.com/DMFriends/weather-app/issues/new).
 
 ### Troubleshooting
 
