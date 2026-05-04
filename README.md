@@ -59,12 +59,17 @@ Once granted permission, the app posts a single persistent notification that sho
 On Android, you can dismiss the notification to refresh it with up-to-date weather data based on your current location. **It does not update automatically.**
 On iOS, the notification refreshes only when the app is in the foreground.
 
+### Screenshots
+
+You can find screenshots of the app [here](https://github.com/DMFriends/weather-app/tree/main/screenshots) so you can see what it looks like. Feel free to submit feedback by submitting an [issue](https://github.com/DMFriends/weather-app/issues/new)
+
 ### Troubleshooting
 
 - **"Location permission denied"** — enable location access for the Weather app in your device settings, then tap **Use Current Location** or relaunch.
 - **"Could not get your location"** — you can still type a city into the search box and tap **Get weather**.
 - **Notification not updating on Android** — make sure background battery optimizations aren't killing the app; on Android 12+ the app will prompt for the "Alarms & reminders" / exact alarms permission the first time.
 - **Stale data on reopen** — the cache is valid for 30 minutes; after that the app fetches a fresh forecast.
+- **Submit an [issue](https://github.com/DMFriends/weather-app/issues/new) or [PR](https://github.com/DMFriends/weather-app/pulls)** for any other issues/bugs.
 
 # Building from Source
 
