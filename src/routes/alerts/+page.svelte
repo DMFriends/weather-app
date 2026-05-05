@@ -1,7 +1,9 @@
 <script lang="ts">
   import { browser } from "$app/environment";
   import { page } from "$app/state";
-  import { readForecastCache } from "$lib/weatherForecastCache";
+  import { readForecastCache, writeForecastCache } from "$lib/weatherForecastCache";
+  import { fetchWeatherForecast } from "$lib/weatherForecastApi";
+  import { syncAlertNotifications } from "$lib/weatherAlertNotifications";
   import {
     getAlerts,
     sortAlertsByEffectiveDesc,
@@ -9,7 +11,7 @@
     type WeatherApiAlert,
     type WeatherApiResponse,
   } from "$lib/forecast";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
 
   let locationName = $state("");
   let alerts: WeatherApiAlert[] = $state([]);
@@ -52,23 +54,48 @@
       alerts = sortAlertsByEffectiveDesc(getAlerts(cached.response));
     }
     loaded = true;
+    void refreshForecastInBackground();
   });
+
+  async function refreshForecastInBackground() {
+    const entry = readForecastCache<WeatherApiResponse>();
+    if (!entry?.query) return;
+    try {
+      const resp = await fetchWeatherForecast(entry.query);
+      writeForecastCache(entry.query, resp);
+      locationName = resp.location?.name ?? "";
+      alerts = sortAlertsByEffectiveDesc(getAlerts(resp));
+      void syncAlertNotifications(getAlerts(resp), resp.location);
+    } catch {
+      /* keep cached UI on network failure */
+    }
+  }
+
+  function revealHighlightedAlert(key: string, attempt = 0) {
+    const esc =
+      typeof CSS !== "undefined" && typeof CSS.escape === "function"
+        ? CSS.escape(key)
+        : key.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const el = document.querySelector(`[data-alert-key="${esc}"]`);
+    if (!(el instanceof HTMLElement)) {
+      if (attempt < 6) setTimeout(() => revealHighlightedAlert(key, attempt + 1), 80);
+      return;
+    }
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.querySelectorAll("details").forEach((d) => {
+      (d as HTMLDetailsElement).open = true;
+    });
+  }
 
   $effect(() => {
     if (!browser || !loaded || !highlightedKey) return;
     const key = highlightedKey;
-    queueMicrotask(() => {
-      const esc =
-        typeof CSS !== "undefined" && typeof CSS.escape === "function"
-          ? CSS.escape(key)
-          : key.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-      const el = document.querySelector(`[data-alert-key="${esc}"]`);
-      if (!(el instanceof HTMLElement)) return;
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-      el.querySelectorAll("details").forEach((d) => {
-        (d as HTMLDetailsElement).open = true;
+    void (async () => {
+      await tick();
+      requestAnimationFrame(() => {
+        revealHighlightedAlert(key);
       });
-    });
+    })();
   });
 </script>
 

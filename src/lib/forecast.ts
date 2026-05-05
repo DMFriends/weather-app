@@ -53,7 +53,8 @@ export type WeatherApiResponse = {
     forecastday: WeatherApiForecastDay[];
   };
   alerts?: {
-    alert?: WeatherApiAlert[];
+    /** WeatherAPI uses one object when there is a single alert, array otherwise. */
+    alert?: WeatherApiAlert | WeatherApiAlert[];
   };
 };
 
@@ -218,14 +219,47 @@ export function currentPrecipChanceFromHourly(
 }
 
 export function getAlerts(resp: WeatherApiResponse | null | undefined): WeatherApiAlert[] {
-  return resp?.alerts?.alert ?? [];
+  const raw = resp?.alerts?.alert;
+  if (raw == null) return [];
+  if (Array.isArray(raw)) return raw;
+  return [raw];
+}
+
+/** Sorted key=value concat — must stay aligned with Java `WeatherAlertNotifier.alertCanonicalKvString`. */
+function alertCanonicalKvString(a: WeatherApiAlert): string {
+  const src = a as Record<string, unknown>;
+  const keys = Object.keys(src).sort();
+  let out = "";
+  for (const k of keys) {
+    const v = src[k];
+    const vs =
+      v === null || v === undefined
+        ? ""
+        : typeof v === "string"
+          ? v
+          : typeof v === "number" || typeof v === "boolean"
+            ? String(v)
+            : JSON.stringify(v);
+    out += `${k}\u000b${vs}\u000c`;
+  }
+  return out;
+}
+
+/** Unsigned DJB2 hex over raw string (matches Java `WeatherAlertNotifier.djb2RawHex`). */
+function djb2UnsignedHex(raw: string): string {
+  if (!raw) return "";
+  let h = 5381;
+  for (let i = 0; i < raw.length; i++) {
+    h = ((h * 33) ^ raw.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(16);
 }
 
 /** Stable key for the same logical alert across refreshes (notifications, deep links). */
 export function weatherAlertDedupKey(a: WeatherApiAlert): string {
-  return [a.event, a.headline, a.effective, a.expires]
-    .map((s) => (typeof s === "string" ? s.trim() : ""))
-    .join("|");
+  const t = (s: string | undefined) => (typeof s === "string" ? s.trim() : "");
+  const payloadFp = djb2UnsignedHex(alertCanonicalKvString(a));
+  return [t(a.effective), t(a.expires), t(a.event), payloadFp].join("|");
 }
 
 /** Parse alert effective time for sorting (CAP effective ~ issued/start; newest first). */

@@ -9,6 +9,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(WeatherNativeNotificationPlugin.class);
+        registerPlugin(WeatherAlertDedupPlugin.class);
         registerPlugin(BackgroundLocationPermissionPlugin.class);
         super.onCreate(savedInstanceState);
     }

@@ -60,7 +60,7 @@ public class WeatherSyncWorker extends Worker {
                 URLEncoder.encode(apiKey, StandardCharsets.UTF_8.name()) +
                 "&q=" +
                 URLEncoder.encode(query, StandardCharsets.UTF_8.name()) +
-                "&days=2&aqi=no&alerts=no";
+                "&days=10&aqi=no&alerts=yes";
             String json = httpGet(urlStr);
             JSONObject root = new JSONObject(json);
             if (root.has("error")) {
@@ -85,6 +85,7 @@ public class WeatherSyncWorker extends Worker {
 
             Log.i(TAG, "performSync posting notification title=" + title + " body=" + body);
             WeatherNotificationHelper.show(ctx, title, body);
+            WeatherAlertNotifier.scheduleFromForecastRoot(ctx, root);
         } catch (Exception e) {
             Log.e(TAG, "Weather sync failed", e);
             WeatherNotificationHelper.showPersistedIfAvailable(ctx);

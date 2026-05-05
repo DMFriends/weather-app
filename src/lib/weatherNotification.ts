@@ -1,3 +1,5 @@
+import { browser } from "$app/environment";
+import { goto } from "$app/navigation";
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { LocalNotifications } from "@capacitor/local-notifications";
 import { PUBLIC_API_KEY } from "$env/static/public";
@@ -36,10 +38,13 @@ export async function updateWeatherLocation(location: { lat: number; lon: number
 const CHANNEL_ID = "current_weather";
 
 /** Android: native notification; swipe-dismiss runs WeatherAPI with current device location. */
-const WeatherNativeNotification = registerPlugin<{
+export const WeatherNativeNotification = registerPlugin<{
 	sync: (opts: { apiKey: string; query: string; title?: string; body?: string }) => Promise<void>;
 	cancelDisplay?: () => Promise<void>;
 	requestExactAlarms?: () => Promise<void>;
+	cancelWeatherAlertNotifications?: () => Promise<void>;
+	scheduleWeatherAlertsFromForecastJson?: (opts: { forecastJson: string }) => Promise<void>;
+	consumePendingAlertKey?: () => Promise<{ key?: string }>;
 	clear: () => Promise<void>;
 }>("WeatherNativeNotification");
 
@@ -193,4 +198,32 @@ export async function clearWeatherNotification() {
 	} catch {
 		/* noop */
 	}
+}
+
+/** Pending navigation after tapping an alert notification posted from native ({@link WeatherAlertNotifier}). */
+export async function consumeAndroidPendingAlertDeepLink(): Promise<void> {
+	if (!browser || Capacitor.getPlatform() !== "android") return;
+	try {
+		const out = await WeatherNativeNotification.consumePendingAlertKey?.();
+		const key = out?.key;
+		if (typeof key === "string" && key.length > 0) {
+			await goto(`/alerts?alert=${encodeURIComponent(key)}`);
+		}
+	} catch {
+		/* noop */
+	}
+}
+
+/**
+ * Cold opens can fire `appStateChange` before layout mounts its listener. Flush pending alert
+ * navigation several times and hook `resume` elsewhere — cheap no-op when nothing pending.
+ */
+export function scheduleConsumeAndroidPendingAlertDeepLinks(): void {
+	if (!browser || Capacitor.getPlatform() !== "android") return;
+	void consumeAndroidPendingAlertDeepLink();
+	queueMicrotask(() => void consumeAndroidPendingAlertDeepLink());
+	requestAnimationFrame(() => void consumeAndroidPendingAlertDeepLink());
+	setTimeout(() => void consumeAndroidPendingAlertDeepLink(), 120);
+	setTimeout(() => void consumeAndroidPendingAlertDeepLink(), 450);
+	setTimeout(() => void consumeAndroidPendingAlertDeepLink(), 1200);
 }

@@ -1,9 +1,16 @@
 <script lang="ts">
-	import { goto } from "$app/navigation";
+	import { browser } from "$app/environment";
 	import { App } from "@capacitor/app";
 	import type { PluginListenerHandle } from "@capacitor/core";
-	import { LocalNotifications } from "@capacitor/local-notifications";
 	import { setAlertNotificationsAppActive } from "$lib/weatherAlertNotifications";
+	import {
+		disposeWeatherAlertNotificationTapRouting,
+		ensureWeatherAlertNotificationTapRouting,
+	} from "$lib/weatherAlertNotificationTap";
+	import {
+		consumeAndroidPendingAlertDeepLink,
+		scheduleConsumeAndroidPendingAlertDeepLinks,
+	} from "$lib/weatherNotification";
 	import { notifyAppResumed } from "$lib/sessionState";
 	import {
 		APP_VERSION,
@@ -20,7 +27,7 @@
 	// resume notifications even when the user is on a sub-page (and we don't
 	// re-register on every back-press).
 	let appStateHandle: PluginListenerHandle | undefined;
-	let notificationActionHandle: PluginListenerHandle | undefined;
+	let appResumeHandle: PluginListenerHandle | undefined;
 
 	let updateInfo: UpdateInfo | null = $state(null);
 	let manualChecking = $state(false);
@@ -71,6 +78,10 @@
 		updateInfo = null;
 	}
 
+	if (browser) {
+		void ensureWeatherAlertNotificationTapRouting();
+	}
+
 	onMount(() => {
 		void runUpdateCheck();
 
@@ -80,9 +91,14 @@
 					setAlertNotificationsAppActive(state.isActive);
 					if (state.isActive) {
 						notifyAppResumed();
+						void consumeAndroidPendingAlertDeepLink();
 						void runUpdateCheck();
 					}
 				});
+				appResumeHandle = await App.addListener("resume", () => {
+					void consumeAndroidPendingAlertDeepLink();
+				});
+				scheduleConsumeAndroidPendingAlertDeepLinks();
 				try {
 					const st = await App.getState();
 					setAlertNotificationsAppActive(st.isActive);
@@ -92,34 +108,6 @@
 			} catch {
 				// App plugin not available on web — nothing to do.
 			}
-
-			try {
-				// Update notification → APK URL in browser. Weather alert notifications
-				// carry `weatherAlertKey` → open /alerts with that alert highlighted.
-				notificationActionHandle = await LocalNotifications.addListener(
-					"localNotificationActionPerformed",
-					(action) => {
-						if (typeof window === "undefined") return;
-						const extra = action?.notification?.extra as
-							| Record<string, unknown>
-							| undefined;
-						const url = typeof extra?.url === "string" ? extra.url : undefined;
-						const alertKey =
-							typeof extra?.weatherAlertKey === "string"
-								? extra.weatherAlertKey
-								: undefined;
-						if (url) {
-							window.open(url, "_blank", "noopener,noreferrer");
-							return;
-						}
-						if (alertKey) {
-							void goto(`/alerts?alert=${encodeURIComponent(alertKey)}`);
-						}
-					},
-				);
-			} catch {
-				// LocalNotifications plugin not available on web — ignore.
-			}
 		})();
 	});
 
@@ -128,10 +116,11 @@
 			void appStateHandle.remove();
 			appStateHandle = undefined;
 		}
-		if (notificationActionHandle) {
-			void notificationActionHandle.remove();
-			notificationActionHandle = undefined;
+		if (appResumeHandle) {
+			void appResumeHandle.remove();
+			appResumeHandle = undefined;
 		}
+		void disposeWeatherAlertNotificationTapRouting();
 	});
 </script>
 

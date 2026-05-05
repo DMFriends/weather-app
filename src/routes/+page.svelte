@@ -1,9 +1,10 @@
 <script lang="ts">
     import { Geolocation } from "@capacitor/geolocation";
     import { PUBLIC_API_KEY } from "$env/static/public";
+    import { fetchWeatherForecast } from "$lib/weatherForecastApi";
     import { readForecastCache, writeForecastCache } from "$lib/weatherForecastCache";
     import { clearWeatherNotification, syncWeatherNotification } from "$lib/weatherNotification";
-    import { clearNotifiedAlerts, syncAlertNotifications } from "$lib/weatherAlertNotifications";
+    import { syncAlertNotifications } from "$lib/weatherAlertNotifications";
     import {
       buildDaily,
       buildHourly,
@@ -50,17 +51,6 @@
       lon: number;
       url: string;
     };
-
-    async function fetchForecast(q: string) {
-      const res = await fetch(
-        `https://api.weatherapi.com/v1/forecast.json?key=${PUBLIC_API_KEY}&q=${encodeURIComponent(q)}&days=10&aqi=no&alerts=yes`
-      );
-      const json = await res.json();
-      if (!res.ok) {
-        throw new Error(json?.error?.message || "API error");
-      }
-      return json as WeatherApiResponse;
-    }
 
     async function fetchCitySuggestions(q: string) {
       const res = await fetch(
@@ -118,21 +108,25 @@
     let bgPromptOfferedThisSession = $state(false);
     let bgConsentBusy = $state(false);
 
-    // Horizontal accuracy thresholds (meters). Precise mode (fine permission) rejects
-    // very coarse fixes. Approximate mode is used when fine is not granted, or as a
-    // fallback when a precise fix cannot be obtained in time / within max radius.
+    // Horizontal accuracy (meters). With fine permission we only accept GPS-class fixes;
+    // worse candidates are ignored so the API does not snap to a “nearby” area.
     const PRECISE_TARGET_M = 50;
     const PRECISE_ACCEPTABLE_M = 200;
-    const PRECISE_MAX_M = 2000;
+    /** Ignore readings worse than this when precise is granted (filters tower / fused blobs). */
+    const PRECISE_CANDIDATE_MAX_M = 320;
 
     const APPROX_TARGET_M = 10_000;
     const APPROX_ACCEPTABLE_M = 25_000;
     const APPROX_MAX_M = 150_000;
 
+    type GeoPrecisionMode = "precise" | "approximate";
+
     type GeoPosition = Awaited<ReturnType<typeof Geolocation.getCurrentPosition>>;
 
     type PositionStrategy = {
       enableHighAccuracy: boolean;
+      /** Android: avoid extra LocationManager path that can return low-quality fixes. */
+      enableLocationFallback: boolean;
       targetM: number;
       acceptableM: number;
       maxM: number;
@@ -140,10 +134,11 @@
       maxWaitMs: number;
     };
 
-    function strategyForApproximateMode(approximate: boolean): PositionStrategy {
-      if (approximate) {
+    function strategyForPrecisionMode(mode: GeoPrecisionMode): PositionStrategy {
+      if (mode === "approximate") {
         return {
           enableHighAccuracy: false,
+          enableLocationFallback: true,
           targetM: APPROX_TARGET_M,
           acceptableM: APPROX_ACCEPTABLE_M,
           maxM: APPROX_MAX_M,
@@ -153,17 +148,17 @@
       }
       return {
         enableHighAccuracy: true,
+        enableLocationFallback: false,
         targetM: PRECISE_TARGET_M,
         acceptableM: PRECISE_ACCEPTABLE_M,
-        maxM: PRECISE_MAX_M,
-        initialWaitMs: 8_000,
-        maxWaitMs: 20_000,
+        maxM: PRECISE_CANDIDATE_MAX_M,
+        initialWaitMs: 12_000,
+        maxWaitMs: 35_000,
       };
     }
 
     /**
-     * True when fine/precise location is not granted — use coarse / approximate strategy only.
-     * (Includes Android “approximate only” when coarse is granted and fine is not.)
+     * True when fine/precise location is not granted — coarse / approximate path only.
      */
     async function useApproximateLocationStrategy(): Promise<boolean> {
       try {
@@ -174,23 +169,16 @@
       }
     }
 
-    /** Precise session failed in a way where trying low-accuracy is reasonable (no permission denial, etc.). */
-    function shouldFallbackToApproximateAfterPreciseFailure(err: unknown): boolean {
-      const msg = (err instanceof Error ? err.message : String(err)).trim();
-      if (msg === "Timed out waiting for an accurate location") return true;
-      if (msg === "Location accuracy too low") return true;
-      const lower = msg.toLowerCase();
-      if (lower.includes("position unavailable")) return true;
-      if (lower.includes("timed out") || lower.endsWith("timeout")) return true;
-      return false;
+    async function desiredPrecisionMode(): Promise<GeoPrecisionMode> {
+      return (await useApproximateLocationStrategy()) ? "approximate" : "precise";
     }
 
     /**
      * Stream fixes and return the best within deadlines. Uses watchPosition when
      * available so cold-start network guesses can be skipped in precise mode.
      */
-    async function getInitialPositionWithStrategy(approximate: boolean): Promise<GeoPosition> {
-      const s = strategyForApproximateMode(approximate);
+    async function getInitialPositionWithStrategy(mode: GeoPrecisionMode): Promise<GeoPosition> {
+      const s = strategyForPrecisionMode(mode);
 
       return await new Promise<GeoPosition>((resolve, reject) => {
         let best: GeoPosition | null = null;
@@ -226,7 +214,12 @@
         (async () => {
           try {
             watchId = await Geolocation.watchPosition(
-              { enableHighAccuracy: s.enableHighAccuracy, maximumAge: 0, timeout: s.maxWaitMs },
+              {
+                enableHighAccuracy: s.enableHighAccuracy,
+                maximumAge: 0,
+                timeout: s.maxWaitMs,
+                enableLocationFallback: s.enableLocationFallback,
+              },
               (position, err) => {
                 if (err || !position) return;
                 const acc = position.coords.accuracy;
@@ -241,6 +234,7 @@
                 enableHighAccuracy: s.enableHighAccuracy,
                 maximumAge: 0,
                 timeout: s.maxWaitMs,
+                enableLocationFallback: s.enableLocationFallback,
               });
               if (
                 Number.isFinite(pos.coords.accuracy) &&
@@ -261,29 +255,27 @@
         }, s.initialWaitMs);
 
         overallTimer = setTimeout(() => {
-          if (best) finish(best);
-          else fail(new Error("Timed out waiting for an accurate location"));
+          if (mode === "approximate") {
+            if (best) finish(best);
+            else fail(new Error("Timed out waiting for an accurate location"));
+            return;
+          }
+          if (best && Number.isFinite(best.coords.accuracy) && best.coords.accuracy <= s.acceptableM) {
+            finish(best);
+            return;
+          }
+          fail(new Error("Timed out waiting for an accurate location"));
         }, s.maxWaitMs);
       });
     }
 
     /**
-     * With fine/precise permission, keep high-accuracy until a fix cannot be
-     * obtained in time / within max radius; then fall back to approximate once.
+     * Fine permission → high-accuracy pipeline only (no approximate fallback).
+     * Approximate OS setting → coarse pipeline only.
      */
     async function getAccurateInitialPosition(): Promise<GeoPosition> {
-      const useApprox = await useApproximateLocationStrategy();
-      if (useApprox) {
-        return await getInitialPositionWithStrategy(true);
-      }
-      try {
-        return await getInitialPositionWithStrategy(false);
-      } catch (e) {
-        if (shouldFallbackToApproximateAfterPreciseFailure(e)) {
-          return await getInitialPositionWithStrategy(true);
-        }
-        throw e;
-      }
+      const mode = await desiredPrecisionMode();
+      return await getInitialPositionWithStrategy(mode);
     }
 
     async function stopGpsWatch() {
@@ -305,17 +297,18 @@
       lastWatchLon = initialLon;
       lastWatchFetchAt = Date.now();
 
-      const useApprox = await useApproximateLocationStrategy();
-      const s = strategyForApproximateMode(useApprox);
+      const mode = await desiredPrecisionMode();
+      const s = strategyForPrecisionMode(mode);
 
       try {
         locationWatchId = await Geolocation.watchPosition(
           {
             enableHighAccuracy: s.enableHighAccuracy,
-            timeout: 25000,
-            maximumAge: 10000,
+            timeout: mode === "precise" ? 40000 : 25000,
+            maximumAge: mode === "precise" ? 0 : 10000,
             interval: 30000,
             minimumUpdateInterval: 25000,
+            enableLocationFallback: s.enableLocationFallback,
           },
           async (position, err) => {
             if (err || !position) return;
@@ -343,7 +336,7 @@
 
             try {
               const q = `${lat},${lon}`;
-              const resp = await fetchForecast(q);
+              const resp = await fetchWeatherForecast(q);
               writeForecastCache(q, resp);
               suppressSuggestOnce = true;
               city = resp.location.name;
@@ -411,24 +404,13 @@
       await closeBgPromptIfGranted();
     }
 
-    let lastNotifiedLocationKey: string | null = null;
-
     function applyForecastResponse(resp: WeatherApiResponse, opts?: { notify?: boolean }) {
       data = resp;
       buildHourlyAndDaily(resp);
       const notify = opts?.notify ?? true;
       if (notify) {
         void syncWeatherNotification(resp, currentPrecipChancePct);
-
-        // Reset dedup keys when the user switches to a different location so
-        // alerts for the new place aren't suppressed by stale entries.
-        const locKey = `${resp.location?.lat?.toFixed(3)},${resp.location?.lon?.toFixed(3)}`;
-        if (lastNotifiedLocationKey && lastNotifiedLocationKey !== locKey) {
-          clearNotifiedAlerts();
-        }
-        lastNotifiedLocationKey = locKey;
-
-        void syncAlertNotifications(getAlerts(resp));
+        void syncAlertNotifications(getAlerts(resp), resp.location);
       }
     }
 
@@ -461,7 +443,7 @@
       const pos = await getAccurateInitialPosition();
       const { latitude, longitude } = pos.coords;
       const q = `${latitude},${longitude}`;
-      const resp = await fetchForecast(q);
+      const resp = await fetchWeatherForecast(q);
       writeForecastCache(q, resp);
       suppressSuggestOnce = true;
       city = resp.location.name;
@@ -649,7 +631,7 @@
 
       try {
         await stopGpsWatch();
-        const resp = await fetchForecast(q);
+        const resp = await fetchWeatherForecast(q);
         writeForecastCache(q, resp);
         applyForecastResponse(resp);
       } catch (e: unknown) {
@@ -777,7 +759,7 @@
         <span class="nav-meta">Next 72 hours</span>
       </a>
       <a class="nav-link" href="/daily">
-        <span class="nav-icon" aria-hidden="true">📅</span>
+        <span class="nav-icon" aria-hidden="true">🗓️</span>
         <span class="nav-label">Daily</span>
         <span class="nav-meta">Next 3 days</span>
       </a>

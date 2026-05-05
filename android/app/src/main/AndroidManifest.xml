@@ -29,6 +29,7 @@
         </provider>
 
         <receiver android:name=".WeatherDismissReceiver" android:exported="false" />
+        <receiver android:name=".WeatherAlertTapReceiver" android:exported="false" />
         <receiver android:name=".WeatherAlarmReceiver" android:exported="false" />
         <receiver
             android:name=".WeatherBootReceiver"

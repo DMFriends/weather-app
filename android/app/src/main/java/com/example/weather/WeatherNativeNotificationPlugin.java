@@ -10,10 +10,14 @@ import android.os.Build;
 
 import androidx.work.WorkManager;
 
+import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+
+import org.json.JSONException;
+import org.json.JSONObject;
 
 @CapacitorPlugin(name = "WeatherNativeNotification")
 public class WeatherNativeNotificationPlugin extends Plugin {
@@ -57,6 +61,45 @@ public class WeatherNativeNotificationPlugin extends Plugin {
         call.resolve();
     }
 
+    /**
+     * Consumes a pending alert dedup key written when the user tapped a native-scheduled alert
+     * notification ({@link WeatherAlertNotifier}), so JS can navigate to /alerts.
+     */
+    @PluginMethod
+    public void consumePendingAlertKey(PluginCall call) {
+        Context ctx = getContext().getApplicationContext();
+        String key = WeatherPendingAlertNavigation.consumePendingAlertKey(ctx);
+        JSObject ret = new JSObject();
+        if (key != null && !key.isEmpty()) {
+            ret.put("key", key);
+        }
+        call.resolve(ret);
+    }
+
+    /** Cancels OS notifications in the weather-alert id band ({@link WeatherAlertNotifier}). */
+    @PluginMethod
+    public void cancelWeatherAlertNotifications(PluginCall call) {
+        WeatherAlertNotifier.cancelAllScheduledAlertNotifications(getContext().getApplicationContext());
+        call.resolve();
+    }
+
+    /**
+     * Posts alert notifications from the same JSON shape as WeatherAPI forecast root ({@code location},
+     * {@code alerts.alert}), matching {@link WeatherSyncWorker}. Avoids duplicating notifications from
+     * Capacitor LocalNotifications (different Android tags).
+     */
+    @PluginMethod
+    public void scheduleWeatherAlertsFromForecastJson(PluginCall call) {
+        String json = call.getString("forecastJson", "{}");
+        try {
+            JSONObject root = new JSONObject(json);
+            WeatherAlertNotifier.scheduleFromForecastRoot(getContext().getApplicationContext(), root);
+            call.resolve();
+        } catch (JSONException e) {
+            call.reject("Invalid forecast JSON for alerts", e);
+        }
+    }
+
     /** Hide the notification without wiping API key / query (used while reloading forecast). */
     @PluginMethod
     public void cancelDisplay(PluginCall call) {
@@ -94,6 +137,7 @@ public class WeatherNativeNotificationPlugin extends Plugin {
         WeatherAlarmScheduler.cancel(ctx);
         WeatherNotificationHelper.cancel(ctx);
         WorkManager.getInstance(ctx).cancelUniqueWork(WeatherSyncWorker.UNIQUE_PERIODIC);
+        WeatherAlertDedupStorage.clearAll(ctx);
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply();
         call.resolve();
     }
