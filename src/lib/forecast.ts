@@ -227,3 +227,21 @@ export function weatherAlertDedupKey(a: WeatherApiAlert): string {
     .map((s) => (typeof s === "string" ? s.trim() : ""))
     .join("|");
 }
+
+/** Parse alert effective time for sorting (CAP effective ~ issued/start; newest first). */
+function alertEffectiveTimeMs(a: WeatherApiAlert): number {
+  const raw = a.effective;
+  if (!raw) return 0;
+  const t = new Date(raw).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+
+/** Active alerts with most recently effective first (API order is undefined). */
+export function sortAlertsByEffectiveDesc(alerts: WeatherApiAlert[]): WeatherApiAlert[] {
+  return [...alerts].sort((a, b) => {
+    const tb = alertEffectiveTimeMs(b);
+    const ta = alertEffectiveTimeMs(a);
+    if (tb !== ta) return tb - ta;
+    return weatherAlertDedupKey(a).localeCompare(weatherAlertDedupKey(b));
+  });
+}

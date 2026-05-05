@@ -4,6 +4,7 @@
   import { readForecastCache } from "$lib/weatherForecastCache";
   import {
     getAlerts,
+    sortAlertsByEffectiveDesc,
     weatherAlertDedupKey,
     type WeatherApiAlert,
     type WeatherApiResponse,
@@ -48,7 +49,7 @@
     const cached = readForecastCache<WeatherApiResponse>();
     if (cached) {
       locationName = cached.response.location?.name ?? "";
-      alerts = getAlerts(cached.response);
+      alerts = sortAlertsByEffectiveDesc(getAlerts(cached.response));
     }
     loaded = true;
   });
@@ -95,52 +96,57 @@
     </div>
   {:else}
     <ul class="alert-list">
-      {#each alerts as a, idx (weatherAlertDedupKey(a))}
-        <li
-          class="alert-card {severityClass(a.severity)}"
-          class:highlight={weatherAlertDedupKey(a) === highlightedKey}
-          data-alert-key={weatherAlertDedupKey(a)}
-        >
-          <div class="alert-head">
-            <span class="event">{a.event || a.headline || "Weather alert"}</span>
-            {#if a.severity}
-              <span class="badge">{a.severity}</span>
-            {/if}
-          </div>
+      {#each alerts as a (weatherAlertDedupKey(a))}
+        <li class="alert-item" data-alert-key={weatherAlertDedupKey(a)}>
+          <details
+            class="alert-card {severityClass(a.severity)}"
+            class:highlight={weatherAlertDedupKey(a) === highlightedKey}
+          >
+            <summary class="alert-summary">
+              <span class="alert-summary-row">
+                <span class="event">{a.event || a.headline || "Weather alert"}</span>
+                {#if a.severity}
+                  <span class="badge">{a.severity}</span>
+                {/if}
+              </span>
+            </summary>
 
-          {#if a.headline && a.headline !== a.event}
-            <div class="headline">{a.headline}</div>
-          {/if}
+            <div class="alert-body">
+              {#if a.headline && a.headline !== a.event}
+                <div class="headline">{a.headline}</div>
+              {/if}
 
-          {#if a.areas}
-            <div class="meta"><strong>Areas:</strong> {a.areas}</div>
-          {/if}
+              {#if a.areas}
+                <div class="meta"><strong>Areas:</strong> {a.areas}</div>
+              {/if}
 
-          {#if a.effective || a.expires}
-            <div class="meta"><strong>When:</strong> {formatRange(a.effective, a.expires)}</div>
-          {/if}
+              {#if a.effective || a.expires}
+                <div class="meta"><strong>When:</strong> {formatRange(a.effective, a.expires)}</div>
+              {/if}
 
-          {#if a.urgency || a.certainty || a.category}
-            <div class="meta tags">
-              {#if a.category}<span class="tag">{a.category}</span>{/if}
-              {#if a.urgency}<span class="tag">Urgency: {a.urgency}</span>{/if}
-              {#if a.certainty}<span class="tag">Certainty: {a.certainty}</span>{/if}
+              {#if a.urgency || a.certainty || a.category}
+                <div class="meta tags">
+                  {#if a.category}<span class="tag">{a.category}</span>{/if}
+                  {#if a.urgency}<span class="tag">Urgency: {a.urgency}</span>{/if}
+                  {#if a.certainty}<span class="tag">Certainty: {a.certainty}</span>{/if}
+                </div>
+              {/if}
+
+              {#if a.desc}
+                <details class="details">
+                  <summary>Details</summary>
+                  <p class="desc">{a.desc}</p>
+                </details>
+              {/if}
+
+              {#if a.instruction}
+                <details class="details">
+                  <summary>Instructions</summary>
+                  <p class="desc">{a.instruction}</p>
+                </details>
+              {/if}
             </div>
-          {/if}
-
-          {#if a.desc}
-            <details class="details">
-              <summary>Details</summary>
-              <p class="desc">{a.desc}</p>
-            </details>
-          {/if}
-
-          {#if a.instruction}
-            <details class="details">
-              <summary>Instructions</summary>
-              <p class="desc">{a.instruction}</p>
-            </details>
-          {/if}
+          </details>
         </li>
       {/each}
     </ul>
@@ -230,8 +236,13 @@
     gap: 0.75rem;
   }
 
+  .alert-item {
+    margin: 0;
+    padding: 0;
+  }
+
   .alert-card {
-    padding: 0.85rem 1rem;
+    padding: 0;
     border-radius: 12px;
     border: 1px solid;
     background: #fff;
@@ -268,12 +279,48 @@
     color: inherit;
   }
 
-  .alert-head {
+  .alert-summary {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.45rem;
+    list-style: none;
+    cursor: pointer;
+    padding: 0.85rem 1rem;
+  }
+
+  .alert-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .alert-summary::marker {
+    content: "";
+  }
+
+  .alert-summary::before {
+    content: "▸";
+    flex-shrink: 0;
+    margin-top: 0.35em;
+    font-size: 0.65rem;
+    opacity: 0.55;
+    transition: transform 0.15s ease;
+  }
+
+  details.alert-card[open] > .alert-summary::before {
+    transform: rotate(90deg);
+  }
+
+  .alert-summary-row {
+    flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
-    margin-bottom: 0.25rem;
+  }
+
+  .alert-body {
+    padding: 0 1rem 0.85rem;
+    border-top: 1px solid rgba(15, 23, 42, 0.08);
   }
 
   .event {
