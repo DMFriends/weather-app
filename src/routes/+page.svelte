@@ -3,13 +3,14 @@
     import { PUBLIC_API_KEY } from "$env/static/public";
     import { fetchWeatherForecast } from "$lib/weatherForecastApi";
     import { readForecastCache, writeForecastCache } from "$lib/weatherForecastCache";
-    import { syncWeatherNotification } from "$lib/weatherNotification";
+    import { persistAndroidNotificationTempPreference, syncWeatherNotification } from "$lib/weatherNotification";
     import { syncAlertNotifications } from "$lib/weatherAlertNotifications";
     import {
       buildDaily,
       buildHourly,
       currentPrecipChanceFromHourly,
       formatTempPrecise,
+      formatWindSpeed,
       getAlerts,
       loadInitialTempUnit,
       TEMP_UNIT_STORAGE_KEY,
@@ -80,12 +81,25 @@
     let loading = $state(false);
     let error = $state("");
     let tempUnit: TempUnit = $state(loadInitialTempUnit());
+    /** Last snapshot for the ongoing weather notification; posting is gated by {@link notificationSyncEnabled}. */
+    let notificationPayload: { weather: WeatherApiResponse; precipPct: number | null } | null =
+      $state(null);
+    /** True after a forecast apply with {@link applyForecastResponse} `notify: true` this session. */
+    let notificationSyncEnabled = $state(false);
 
     let alertCount = $derived(getAlerts(data).length);
 
     $effect(() => {
       if (typeof localStorage === "undefined") return;
       localStorage.setItem(TEMP_UNIT_STORAGE_KEY, tempUnit);
+      void persistAndroidNotificationTempPreference(tempUnit);
+    });
+
+    $effect(() => {
+      const p = notificationPayload;
+      const u = tempUnit;
+      if (!p || !notificationSyncEnabled) return;
+      void syncWeatherNotification(p.weather, p.precipPct, u);
     });
     let suggestions: WeatherApiCitySearchResult[] = $state([]);
     let suggestionsOpen = $state(false);
@@ -407,9 +421,10 @@
     function applyForecastResponse(resp: WeatherApiResponse, opts?: { notify?: boolean }) {
       data = resp;
       buildHourlyAndDaily(resp);
+      notificationPayload = { weather: resp, precipPct: currentPrecipChancePct };
       const notify = opts?.notify ?? true;
       if (notify) {
-        void syncWeatherNotification(resp, currentPrecipChancePct);
+        notificationSyncEnabled = true;
         void syncAlertNotifications(getAlerts(resp), resp.location);
       }
     }
@@ -484,6 +499,8 @@
       loading = true;
       locationPending = true;
       data = null;
+      notificationPayload = null;
+      notificationSyncEnabled = false;
       hourly = [];
       daily = [];
       currentPrecipChancePct = null;
@@ -624,6 +641,8 @@
 
       loading = true;
       data = null;
+      notificationPayload = null;
+      notificationSyncEnabled = false;
       hourly = [];
       daily = [];
       currentPrecipChancePct = null;
@@ -687,9 +706,9 @@
     <button type="button" onclick={() => loadWeatherFromCurrentLocation()} disabled={loading}>Use Current Location</button>
     <label class="unit-select">
       <span class="unit-label">Units</span>
-      <select bind:value={tempUnit} aria-label="Temperature units">
-        <option value="F">Fahrenheit (°F)</option>
-        <option value="C">Celsius (°C)</option>
+      <select bind:value={tempUnit} aria-label="Measurement units">
+        <option value="F">Standard (US)</option>
+        <option value="C">Metric</option>
       </select>
     </label>
   </div>
@@ -745,7 +764,11 @@
     <div class="card">
       <h2>{data.location.name}</h2>
       <p>🌡️ {formatTempPrecise(data.current.temp_f, tempUnit)}</p>
-      <p>💨 {data.current.wind_mph.toFixed(1)} mph {data.current.wind_dir} ({Math.round(data.current.wind_degree)}°)</p>
+      <p>
+        💨 {formatWindSpeed(data.current.wind_mph, tempUnit)} {data.current.wind_dir} ({Math.round(
+          data.current.wind_degree
+        )}°)
+      </p>
       <p>☔ {currentPrecipChancePct ?? 0}% precip</p>
     </div>
   {/if}

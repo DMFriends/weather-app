@@ -3,7 +3,9 @@
   import {
     buildDaily,
     formatTemp,
+    formatWindSpeed,
     loadInitialTempUnit,
+    TEMP_UNIT_STORAGE_KEY,
     type DailyForecast,
     type TempUnit,
     type WeatherApiResponse,
@@ -14,6 +16,11 @@
   let daily: DailyForecast[] = $state([]);
   let tempUnit: TempUnit = $state(loadInitialTempUnit());
   let loaded = $state(false);
+
+  $effect(() => {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(TEMP_UNIT_STORAGE_KEY, tempUnit);
+  });
 
   onMount(() => {
     const cached = readForecastCache<WeatherApiResponse>();
@@ -27,7 +34,16 @@
 
 <div class="page">
   <header class="page-header">
-    <a class="back-link" href="/" aria-label="Back to home">← Back</a>
+    <div class="page-header-row">
+      <a class="back-link" href="/" aria-label="Back to home">← Back</a>
+      <label class="unit-select">
+        <span class="unit-label">Units</span>
+        <select bind:value={tempUnit} aria-label="Measurement units">
+          <option value="F">Standard (US)</option>
+          <option value="C">Metric</option>
+        </select>
+      </label>
+    </div>
     <div class="page-header-intro">
       <h1>Daily forecast</h1>
       {#if locationName}
@@ -54,7 +70,11 @@
           </div>
           <div class="daily-meta">
             <span>☔ {d.precipChancePct}% precip</span>
-            <span>💨 {d.maxWindMph.toFixed(1)} mph{d.maxWindDir ? ` ${d.maxWindDir}` : ""}</span>
+            <span
+              >💨 {formatWindSpeed(d.maxWindMph, tempUnit)}{d.maxWindDir
+                ? ` ${d.maxWindDir}`
+                : ""}</span
+            >
           </div>
         </li>
       {/each}
@@ -77,6 +97,33 @@
     flex-direction: column;
     align-items: stretch;
     gap: 0.65rem;
+  }
+
+  .page-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .unit-select {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: clamp(0.85rem, 0.8rem + 0.25vw, 0.95rem);
+  }
+
+  .unit-label {
+    opacity: 0.75;
+  }
+
+  .unit-select select {
+    padding: 0.4rem 0.5rem;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    background: white;
+    font-size: inherit;
   }
 
   .page-header-intro {

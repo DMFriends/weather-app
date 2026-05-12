@@ -31,6 +31,7 @@ public class WeatherSyncWorker extends Worker {
     private static final String PREFS = "weather_native_notification";
     private static final String KEY_API = "api_key";
     private static final String KEY_QUERY = "query_q";
+    private static final String KEY_TEMP_UNIT = "temp_unit";
     public static final String UNIQUE_PERIODIC = "weather_periodic_sync";
     public static final String UNIQUE_DISMISS_REFRESH = "weather_dismiss_refresh";
     /** When true, {@link #doWork()} resolves a fresh device location before calling the API. */
@@ -80,8 +81,17 @@ public class WeatherSyncWorker extends Worker {
             long nowSec = System.currentTimeMillis() / 1000;
             int precip = computePrecipPct(root, nowSec);
 
+            boolean metric = "C".equals(prefs.getString(KEY_TEMP_UNIT, "F"));
             String body =
-                String.format(Locale.US, "%.1f °F · %.1f mph %s · %d%% precip", tempF, windMph, windDir, precip);
+                metric
+                    ? String.format(
+                        Locale.US,
+                        "%.1f °C · %.1f km/h %s · %d%% precip",
+                        (tempF - 32.0) * 5.0 / 9.0,
+                        windMph * 1.60934,
+                        windDir,
+                        precip)
+                    : String.format(Locale.US, "%.1f °F · %.1f mph %s · %d%% precip", tempF, windMph, windDir, precip);
 
             Log.i(TAG, "performSync posting notification title=" + title + " body=" + body);
             WeatherNotificationHelper.show(ctx, title, body);

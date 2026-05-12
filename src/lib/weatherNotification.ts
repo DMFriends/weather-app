@@ -3,6 +3,13 @@ import { goto } from "$app/navigation";
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { LocalNotifications } from "@capacitor/local-notifications";
 import { PUBLIC_API_KEY } from "$env/static/public";
+import {
+	formatTempPrecise,
+	formatWindSpeed,
+	loadInitialTempUnit,
+	type TempUnit,
+	type WeatherApiResponse,
+} from "$lib/forecast";
 
 const NOTIFICATION_ID = 71234;
 
@@ -15,9 +22,11 @@ export async function updateWeatherLocation(location: { lat: number; lon: number
 	}
 
 	if (Capacitor.getPlatform() === "android") {
+		const unit = loadInitialTempUnit();
 		await WeatherNativeNotification.sync({
 			apiKey: PUBLIC_API_KEY,
 			query: weatherQuery({ location }),
+			tempUnit: unit,
 		});
 		return;
 	}
@@ -32,21 +41,41 @@ export async function updateWeatherLocation(location: { lat: number; lon: number
 				...location,
 			},
 		},
-		snap.precipPct
+		snap.precipPct,
+		snap.tempUnit
 	);
 }
 const CHANNEL_ID = "current_weather";
 
 /** Android: native notification; swipe-dismiss runs WeatherAPI with current device location. */
 export const WeatherNativeNotification = registerPlugin<{
-	sync: (opts: { apiKey: string; query: string; title?: string; body?: string }) => Promise<void>;
+	sync: (opts: {
+		apiKey: string;
+		query: string;
+		title?: string;
+		body?: string;
+		/** Persisted for background refresh ({@link WeatherSyncWorker}). F or C. */
+		tempUnit?: TempUnit;
+	}) => Promise<void>;
 	cancelDisplay?: () => Promise<void>;
 	requestExactAlarms?: () => Promise<void>;
 	cancelWeatherAlertNotifications?: () => Promise<void>;
 	scheduleWeatherAlertsFromForecastJson?: (opts: { forecastJson: string }) => Promise<void>;
 	consumePendingAlertKey?: () => Promise<{ key?: string }>;
 	clear: () => Promise<void>;
+	/** Updates stored F/C for {@link WeatherSyncWorker} without touching alarms or posting. */
+	setTempUnit: (opts: { tempUnit: TempUnit }) => Promise<void>;
 }>("WeatherNativeNotification");
+
+/** Persists metric/standard preference for native background refresh (Android {@link WeatherSyncWorker}). */
+export async function persistAndroidNotificationTempPreference(unit: TempUnit) {
+	if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "android") return;
+	try {
+		await WeatherNativeNotification.setTempUnit({ tempUnit: unit });
+	} catch {
+		/* older native build */
+	}
+}
 
 /** iOS only — re-post if user dismissed while the WebView is alive. */
 const WATCH_MS = 3500;
@@ -60,6 +89,7 @@ type WeatherNotifyPayload = {
 type Snapshot = {
 	weather: WeatherNotifyPayload;
 	precipPct: number | null;
+	tempUnit: TempUnit;
 };
 
 let channelEnsured = false;
@@ -71,6 +101,23 @@ let onVisibility: (() => void) | undefined;
 
 function weatherQuery(weather: { location: { lat: number; lon: number } }): string {
 	return `${weather.location.lat},${weather.location.lon}`;
+}
+
+function toNotifyPayload(w: WeatherApiResponse | WeatherNotifyPayload): WeatherNotifyPayload {
+	if ("forecast" in w && w.forecast != null) {
+		return { location: w.location, current: w.current };
+	}
+	return w;
+}
+
+export function formatWeatherNotificationBody(
+	weather: WeatherApiResponse | WeatherNotifyPayload,
+	precipPct: number | null,
+	unit: TempUnit
+): string {
+	const w = toNotifyPayload(weather);
+	const precip = precipPct ?? 0;
+	return `${formatTempPrecise(w.current.temp_f, unit)} · ${formatWindSpeed(w.current.wind_mph, unit)} ${w.current.wind_dir} · ${precip}% precip`;
 }
 
 async function ensureIosChannel() {
@@ -112,11 +159,14 @@ function startIosWatchdog() {
 	}
 }
 
-async function postIosNotification(weather: WeatherNotifyPayload, precipPct: number | null) {
+async function postIosNotification(
+	weather: WeatherNotifyPayload,
+	precipPct: number | null,
+	tempUnit: TempUnit
+) {
 	await ensureIosChannel();
 	const title = weather.location.name;
-	const precip = precipPct ?? 0;
-	const body = `${weather.current.temp_f.toFixed(1)} °F · ${weather.current.wind_mph.toFixed(1)} mph ${weather.current.wind_dir} · ${precip}% precip`;
+	const body = formatWeatherNotificationBody(weather, precipPct, tempUnit);
 
 	await LocalNotifications.schedule({
 		notifications: [
@@ -137,14 +187,21 @@ async function restoreIosIfMissing() {
 		const { notifications } = await LocalNotifications.getDeliveredNotifications();
 		const stillThere = notifications.some((n) => n.id === NOTIFICATION_ID);
 		if (stillThere) return;
-		await postIosNotification(activeSnapshot.weather, activeSnapshot.precipPct);
+		await postIosNotification(activeSnapshot.weather, activeSnapshot.precipPct, activeSnapshot.tempUnit);
 	} catch (e) {
 		console.warn("weather notification watchdog", e);
 	}
 }
 
-export async function syncWeatherNotification(weather: WeatherNotifyPayload, precipPct: number | null) {
+export async function syncWeatherNotification(
+	weather: WeatherApiResponse | WeatherNotifyPayload,
+	precipPct: number | null,
+	tempUnit?: TempUnit
+) {
 	if (!Capacitor.isNativePlatform()) return;
+
+	const unit = tempUnit ?? loadInitialTempUnit();
+	const payload = toNotifyPayload(weather);
 
 	const checked = await LocalNotifications.checkPermissions();
 	if (checked.display !== "granted") {
@@ -153,11 +210,10 @@ export async function syncWeatherNotification(weather: WeatherNotifyPayload, pre
 	}
 
 	if (Capacitor.getPlatform() === "android") {
-		activeSnapshot = { weather, precipPct };
+		activeSnapshot = { weather: payload, precipPct, tempUnit: unit };
 
-		const title = weather.location.name;
-		const precip = precipPct ?? 0;
-		const body = `${weather.current.temp_f.toFixed(1)} °F · ${weather.current.wind_mph.toFixed(1)} mph ${weather.current.wind_dir} · ${precip}% precip`;
+		const title = payload.location.name;
+		const body = formatWeatherNotificationBody(payload, precipPct, unit);
 
 		try {
 			await WeatherNativeNotification.requestExactAlarms?.();
@@ -167,15 +223,16 @@ export async function syncWeatherNotification(weather: WeatherNotifyPayload, pre
 
 		await WeatherNativeNotification.sync({
 			apiKey: PUBLIC_API_KEY,
-			query: weatherQuery(weather),
+			query: weatherQuery(payload),
 			title,
 			body,
+			tempUnit: unit,
 		});
 		return;
 	}
 
-	activeSnapshot = { weather, precipPct };
-	await postIosNotification(weather, precipPct);
+	activeSnapshot = { weather: payload, precipPct, tempUnit: unit };
+	await postIosNotification(payload, precipPct, unit);
 	startIosWatchdog();
 }
 

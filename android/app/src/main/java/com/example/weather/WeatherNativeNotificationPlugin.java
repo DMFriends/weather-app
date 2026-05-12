@@ -25,6 +25,8 @@ public class WeatherNativeNotificationPlugin extends Plugin {
     private static final String PREFS = "weather_native_notification";
     private static final String KEY_API = "api_key";
     private static final String KEY_QUERY = "query_q";
+    /** Saved from JS; {@link WeatherSyncWorker} formats the notification body in the same units (F vs C). */
+    private static final String KEY_TEMP_UNIT = "temp_unit";
     private static final String KEY_LAST_TITLE = WeatherNotificationHelper.KEY_LAST_TITLE;
     private static final String KEY_LAST_BODY = WeatherNotificationHelper.KEY_LAST_BODY;
 
@@ -42,6 +44,11 @@ public class WeatherNativeNotificationPlugin extends Plugin {
         Context ctx = getContext().getApplicationContext();
         SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         SharedPreferences.Editor ed = prefs.edit().putString(KEY_API, apiKey).putString(KEY_QUERY, query);
+        String tempUnitRaw = call.getString("tempUnit", null);
+        if (tempUnitRaw != null && !tempUnitRaw.trim().isEmpty()) {
+            String tu = "C".equalsIgnoreCase(tempUnitRaw.trim()) ? "C" : "F";
+            ed.putString(KEY_TEMP_UNIT, tu);
+        }
         boolean hasDisplay =
             title != null
                 && body != null
@@ -58,6 +65,15 @@ public class WeatherNativeNotificationPlugin extends Plugin {
         if (hasDisplay) {
             WeatherNotificationHelper.show(ctx, title, body);
         }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void setTempUnit(PluginCall call) {
+        String tempUnitRaw = call.getString("tempUnit", "F");
+        String tu = "C".equalsIgnoreCase(tempUnitRaw.trim()) ? "C" : "F";
+        Context ctx = getContext().getApplicationContext();
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_TEMP_UNIT, tu).apply();
         call.resolve();
     }
 

@@ -102,6 +102,18 @@ export function formatTempPrecise(tempF: number, unit: TempUnit) {
   return `${value.toFixed(1)} °${unit}`;
 }
 
+const MPH_TO_KMH = 1.60934;
+
+export function mphToKmh(mph: number) {
+  return mph * MPH_TO_KMH;
+}
+
+/** Standard (US) uses mph; metric uses km/h. Matches `TempUnit`: F → mph, C → km/h. */
+export function formatWindSpeed(mph: number, unit: TempUnit) {
+  if (unit === "C") return `${mphToKmh(mph).toFixed(1)} km/h`;
+  return `${mph.toFixed(1)} mph`;
+}
+
 export function clampPct(n: unknown) {
   const v = typeof n === "number" && Number.isFinite(n) ? n : 0;
   return Math.max(0, Math.min(100, Math.round(v)));
