@@ -5,7 +5,7 @@
   import { fetchWeatherForecast } from "$lib/weatherForecastApi";
   import { syncAlertNotifications } from "$lib/weatherAlertNotifications";
   import {
-    getAlerts,
+    getRelevantAlerts,
     sortAlertsByEffectiveDesc,
     weatherAlertDedupKey,
     type WeatherApiAlert,
@@ -51,7 +51,7 @@
     const cached = readForecastCache<WeatherApiResponse>();
     if (cached) {
       locationName = cached.response.location?.name ?? "";
-      alerts = sortAlertsByEffectiveDesc(getAlerts(cached.response));
+      alerts = sortAlertsByEffectiveDesc(getRelevantAlerts(cached.response));
     }
     loaded = true;
     void refreshForecastInBackground();
@@ -64,8 +64,8 @@
       const resp = await fetchWeatherForecast(entry.query);
       writeForecastCache(entry.query, resp);
       locationName = resp.location?.name ?? "";
-      alerts = sortAlertsByEffectiveDesc(getAlerts(resp));
-      void syncAlertNotifications(getAlerts(resp), resp.location);
+      alerts = sortAlertsByEffectiveDesc(getRelevantAlerts(resp));
+      void syncAlertNotifications(getRelevantAlerts(resp), resp.location);
     } catch {
       /* keep cached UI on network failure */
     }

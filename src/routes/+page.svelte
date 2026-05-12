@@ -11,7 +11,7 @@
       currentPrecipChanceFromHourly,
       formatTempPrecise,
       formatWindSpeed,
-      getAlerts,
+      getRelevantAlerts,
       loadInitialTempUnit,
       TEMP_UNIT_STORAGE_KEY,
       type DailyForecast,
@@ -87,7 +87,7 @@
     /** True after a forecast apply with {@link applyForecastResponse} `notify: true` this session. */
     let notificationSyncEnabled = $state(false);
 
-    let alertCount = $derived(getAlerts(data).length);
+    let alertCount = $derived(getRelevantAlerts(data).length);
 
     $effect(() => {
       if (typeof localStorage === "undefined") return;
@@ -425,7 +425,7 @@
       const notify = opts?.notify ?? true;
       if (notify) {
         notificationSyncEnabled = true;
-        void syncAlertNotifications(getAlerts(resp), resp.location);
+        void syncAlertNotifications(getRelevantAlerts(resp), resp.location);
       }
     }
 

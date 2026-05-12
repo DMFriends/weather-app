@@ -1,3 +1,5 @@
+import { filterAlertsForLocation } from "./alertLocationRelevance";
+
 export type WeatherApiForecastHour = {
   time_epoch: number;
   temp_f: number;
@@ -20,6 +22,15 @@ export type WeatherApiForecastDay = {
   hour: WeatherApiForecastHour[];
 };
 
+/** Query location; {@code region} and {@code country} come from WeatherAPI and drive alert-area filtering. */
+export type WeatherApiLocation = {
+  name: string;
+  lat: number;
+  lon: number;
+  region?: string;
+  country?: string;
+};
+
 export type WeatherApiAlert = {
   headline?: string;
   msgtype?: string;
@@ -37,11 +48,7 @@ export type WeatherApiAlert = {
 };
 
 export type WeatherApiResponse = {
-  location: {
-    name: string;
-    lat: number;
-    lon: number;
-  };
+  location: WeatherApiLocation;
   current: {
     last_updated_epoch: number;
     temp_f: number;
@@ -235,6 +242,12 @@ export function getAlerts(resp: WeatherApiResponse | null | undefined): WeatherA
   if (raw == null) return [];
   if (Array.isArray(raw)) return raw;
   return [raw];
+}
+
+/** User-facing alerts: same as {@link getAlerts} but drops US alerts whose {@code areas} only list other states. */
+export function getRelevantAlerts(resp: WeatherApiResponse | null | undefined): WeatherApiAlert[] {
+  if (resp == null) return [];
+  return filterAlertsForLocation(getAlerts(resp), resp.location);
 }
 
 /** Sorted key=value concat — must stay aligned with Java `WeatherAlertNotifier.alertCanonicalKvString`. */

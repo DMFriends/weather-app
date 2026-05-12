@@ -1,6 +1,6 @@
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { LocalNotifications } from "@capacitor/local-notifications";
-import { weatherAlertDedupKey, type WeatherApiAlert } from "$lib/forecast";
+import { weatherAlertDedupKey, type WeatherApiAlert, type WeatherApiLocation } from "$lib/forecast";
 import { WeatherNativeNotification } from "$lib/weatherNotification";
 
 /**
@@ -34,7 +34,7 @@ let lastAlertNotifyLocationKey: string | null = null;
 
 let lastAlertsSnapshot: WeatherApiAlert[] = [];
 /** Used when re-scheduling from native lifecycle (same lat/lon as last forecast sync). */
-let lastAlertLocation: { lat: number; lon: number } | null = null;
+let lastAlertLocation: WeatherApiLocation | null = null;
 
 /** Last coordinates + alert-set fingerprint we successfully pushed to the OS (native skip gate). */
 let lastPushedAlertsLocationKey: string | null = null;
@@ -224,7 +224,7 @@ async function ensureAlertChannel() {
 /** Minimal forecast root for {@link WeatherAlertNotifier} / WeatherSyncWorker parity. */
 function buildForecastRootJsonForNative(
   alerts: WeatherApiAlert[],
-  location: { lat: number; lon: number } | null,
+  location: WeatherApiLocation | null,
 ): string {
   const root: Record<string, unknown> = {
     alerts: { alert: alerts },
@@ -234,7 +234,18 @@ function buildForecastRootJsonForNative(
     Number.isFinite(location.lat) &&
     Number.isFinite(location.lon)
   ) {
-    root.location = { lat: location.lat, lon: location.lon };
+    const locPayload: Record<string, unknown> = {
+      lat: location.lat,
+      lon: location.lon,
+    };
+    if (location.name) locPayload.name = location.name;
+    if (location.region != null && String(location.region).trim() !== "") {
+      locPayload.region = location.region;
+    }
+    if (location.country != null && String(location.country).trim() !== "") {
+      locPayload.country = location.country;
+    }
+    root.location = locPayload;
   }
   return JSON.stringify(root);
 }
@@ -251,7 +262,7 @@ function buildBody(a: WeatherApiAlert): string {
 
 export async function syncAlertNotifications(
   alerts: WeatherApiAlert[],
-  location?: { lat: number; lon: number } | null,
+  location?: WeatherApiLocation | null,
 ): Promise<void> {
   lastAlertsSnapshot = alerts ?? [];
   if (
@@ -259,7 +270,13 @@ export async function syncAlertNotifications(
     Number.isFinite(location.lat) &&
     Number.isFinite(location.lon)
   ) {
-    lastAlertLocation = { lat: location.lat, lon: location.lon };
+    lastAlertLocation = {
+      name: location.name,
+      lat: location.lat,
+      lon: location.lon,
+      region: location.region,
+      country: location.country,
+    };
     if (Capacitor.getPlatform() === "android") {
       try {
         await WeatherAlertDedup.maybeClearDedupForLocation({

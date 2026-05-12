@@ -129,6 +129,10 @@ public final class WeatherAlertNotifier {
             long expiresMs = parseExpiresMs(a.optString("expires", ""));
             if (expiresMs < now) continue;
 
+            if (!WeatherAlertLocationFilter.isAlertRelevantToLocation(a, locObj)) {
+                continue;
+            }
+
             if (notifySlot >= ALERT_NOTIFICATION_ID_RANGE) {
                 Log.w(TAG, "Alert notification id band full; skipping remaining alerts");
                 break;
