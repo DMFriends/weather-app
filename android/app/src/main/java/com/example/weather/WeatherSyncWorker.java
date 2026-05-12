@@ -76,6 +76,11 @@ public class WeatherSyncWorker extends Worker {
             double tempF = current.getDouble("temp_f");
             double windMph = current.getDouble("wind_mph");
             String windDir = current.getString("wind_dir");
+            int windDeg = current.optInt("wind_degree", Integer.MIN_VALUE);
+            String windDirDeg =
+                windDeg != Integer.MIN_VALUE
+                    ? String.format(Locale.US, "%s (%d°)", windDir, windDeg)
+                    : windDir;
             long apiUpdatedEpoch = current.optLong("last_updated_epoch", 0);
 
             long nowSec = System.currentTimeMillis() / 1000;
@@ -89,9 +94,9 @@ public class WeatherSyncWorker extends Worker {
                         "%.1f °C · %.1f km/h %s · %d%% precip",
                         (tempF - 32.0) * 5.0 / 9.0,
                         windMph * 1.60934,
-                        windDir,
+                        windDirDeg,
                         precip)
-                    : String.format(Locale.US, "%.1f °F · %.1f mph %s · %d%% precip", tempF, windMph, windDir, precip);
+                    : String.format(Locale.US, "%.1f °F · %.1f mph %s · %d%% precip", tempF, windMph, windDirDeg, precip);
 
             Log.i(TAG, "performSync posting notification title=" + title + " body=" + body);
             WeatherNotificationHelper.show(ctx, title, body);

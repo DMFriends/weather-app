@@ -83,7 +83,7 @@ const SCHEDULE_COOLDOWN_MS = 4000;
 
 type WeatherNotifyPayload = {
 	location: { name: string; lat: number; lon: number };
-	current: { temp_f: number; wind_mph: number; wind_dir: string };
+	current: { temp_f: number; wind_mph: number; wind_dir: string; wind_degree?: number };
 };
 
 type Snapshot = {
@@ -117,7 +117,11 @@ export function formatWeatherNotificationBody(
 ): string {
 	const w = toNotifyPayload(weather);
 	const precip = precipPct ?? 0;
-	return `${formatTempPrecise(w.current.temp_f, unit)} · ${formatWindSpeed(w.current.wind_mph, unit)} ${w.current.wind_dir} · ${precip}% precip`;
+	const deg =
+		typeof w.current.wind_degree === "number" && Number.isFinite(w.current.wind_degree)
+			? ` (${Math.round(w.current.wind_degree)}°)`
+			: "";
+	return `${formatTempPrecise(w.current.temp_f, unit)} · ${formatWindSpeed(w.current.wind_mph, unit)} ${w.current.wind_dir}${deg} · ${precip}% precip`;
 }
 
 async function ensureIosChannel() {
