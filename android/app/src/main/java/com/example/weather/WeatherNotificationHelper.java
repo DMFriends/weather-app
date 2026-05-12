@@ -49,7 +49,12 @@ public final class WeatherNotificationHelper {
         PendingIntent contentPi = PendingIntent.getActivity(context, 1, launch, piFlags);
 
         Intent dismiss = new Intent(context, WeatherDismissReceiver.class);
-        PendingIntent deletePi = PendingIntent.getBroadcast(context, 2, dismiss, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent deletePi =
+            PendingIntent.getBroadcast(
+                context,
+                NOTIFICATION_ID,
+                dismiss,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         NotificationCompat.Builder b = new NotificationCompat.Builder(context, CHANNEL_ID)
             .setContentTitle(title)
