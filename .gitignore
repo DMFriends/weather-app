@@ -8,6 +8,7 @@ android/build/**
 .wrangler
 /.svelte-kit
 /build
+/ios
 
 # OS
 .DS_Store
