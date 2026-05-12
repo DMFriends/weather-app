@@ -1,6 +1,9 @@
 <script lang="ts">
     import { Geolocation } from "@capacitor/geolocation";
-    import { PUBLIC_API_KEY } from "$env/static/public";
+    import {
+      fetchCitySearchSuggestions,
+      type CitySearchSuggestion,
+    } from "$lib/citySearchSuggestions";
     import { fetchWeatherForecast } from "$lib/weatherForecastApi";
     import { readForecastCache, writeForecastCache } from "$lib/weatherForecastCache";
     import { persistAndroidNotificationTempPreference, syncWeatherNotification } from "$lib/weatherNotification";
@@ -43,26 +46,7 @@
       return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
     }
 
-    type WeatherApiCitySearchResult = {
-      id: number;
-      name: string;
-      region: string;
-      country: string;
-      lat: number;
-      lon: number;
-      url: string;
-    };
-
-    async function fetchCitySuggestions(q: string) {
-      const res = await fetch(
-        `https://api.weatherapi.com/v1/search.json?key=${PUBLIC_API_KEY}&q=${encodeURIComponent(q)}`
-      );
-      const json = await res.json();
-      if (!res.ok) {
-        throw new Error(json?.error?.message || "API error");
-      }
-      return json as WeatherApiCitySearchResult[];
-    }
+    type WeatherApiCitySearchResult = CitySearchSuggestion;
 
     function buildHourlyAndDaily(resp: WeatherApiResponse) {
       hourly = buildHourly(resp);
@@ -108,7 +92,8 @@
     let highlightedSuggestionIdx: number = $state(-1);
 
     let suggestTimer: ReturnType<typeof setTimeout> | undefined;
-    let lastSuggestQuery = "";
+    let suggestAbort: AbortController | undefined;
+
     let suppressSuggestOnce = false;
 
     /** Window scroll Y captured on city input pointerdown; used to undo browser scroll-into-view / keyboard jumps. */
@@ -551,6 +536,7 @@
     }
 
     onDestroy(() => {
+      suggestAbort?.abort();
       if (suggestTimer) clearTimeout(suggestTimer);
       if (cityBlurRestoreTimer) clearTimeout(cityBlurRestoreTimer);
       void stopGpsWatch();
@@ -578,6 +564,8 @@
       suggestionsError = "";
 
       if (suggestTimer) clearTimeout(suggestTimer);
+      suggestAbort?.abort();
+      suggestAbort = undefined;
 
       if (suppressSuggestOnce) {
         suppressSuggestOnce = false;
@@ -588,28 +576,30 @@
         suggestions = [];
         suggestionsOpen = false;
         highlightedSuggestionIdx = -1;
-        lastSuggestQuery = q;
         return;
       }
 
+      suggestAbort = new AbortController();
+      const signal = suggestAbort.signal;
+
       suggestTimer = setTimeout(async () => {
-        if (q === lastSuggestQuery) return;
-        lastSuggestQuery = q;
         suggestionsLoading = true;
         highlightedSuggestionIdx = -1;
         try {
-          const results = await fetchCitySuggestions(q);
-          // Keep more results and rely on dropdown max-height + scrolling.
-          suggestions = results.slice(0, 20);
+          const results = await fetchCitySearchSuggestions(q, { signal });
+          if (signal.aborted) return;
+          suggestions = results.slice(0, 150);
           suggestionsOpen = suggestions.length > 0;
-        } catch (e: any) {
+        } catch (e: unknown) {
+          if (signal.aborted) return;
+          const msg = e instanceof Error ? e.message : "Failed to load suggestions";
           suggestions = [];
           suggestionsOpen = false;
-          suggestionsError = e?.message || "Failed to load suggestions";
+          suggestionsError = msg;
         } finally {
           suggestionsLoading = false;
         }
-      }, 250);
+      }, 300);
     });
 
     function scheduleScrollRestoreAfterCityFocus() {
@@ -766,7 +756,7 @@
 
   <div class="search">
     <input
-      placeholder="City (default: your location)"
+      placeholder="Search location…"
       bind:value={city}
       onpointerdown={onCitySearchPointerDown}
       onkeydown={onCityKeyDown}
@@ -786,7 +776,7 @@
 
     {#if suggestionsOpen}
       <div id="city-suggestions" class="suggestions" role="listbox">
-        {#each suggestions as s, idx (s.id)}
+        {#each suggestions as s, idx (s.url || `${idx}|${String(s.lat)}|${String(s.lon)}|${s.name}|${s.country}`)}
           <button
             type="button"
             class="suggestion {idx === highlightedSuggestionIdx ? 'active' : ''}"
