@@ -6,13 +6,14 @@ Android builds are available on the [releases page](https://github.com/DMFriends
 
 ## Features
 
-- **Current conditions at a glance** — temperature (°F), wind speed and direction, and chance of precipitation for right now.
+- **Current conditions at a glance** — temperature, wind speed and direction, and chance of precipitation for right now.
 - **72-hour hourly forecast** — horizontally-scrollable strip with temperature and precipitation chance for each hour.
-- **10-day daily forecast** — high/low temperatures and daily precipitation chance for the next 10 days.
+- **3-day daily forecast** — high/low temperatures and daily precipitation chance for the next 3 days.
 - **Auto-locate on launch** — on startup the app requests your location and loads the forecast for wherever you are.
 - **City search with autocomplete** — type a city name to see live suggestions (keyboard-navigable with arrow keys + Enter).
 - **Live GPS tracking** — while the app is open it watches your location and automatically refreshes the forecast when you move more than ~900 m.
 - **Offline-friendly cache** — the most recent forecast is stored locally and shown instantly on reopen (fresh for 30 minutes) so you don't wait on the network.
+- **Preferred units of measurement** -- you can choose your preferred units of measurement (°F or °C, mph or km/h).
 - **Persistent status-bar notification** — shows your current location, temperature, wind, and precipitation chance at a glance.
   - On **Android**, a native background worker refreshes the notification every ~15 minutes, even when the app is closed, and re-posts the notification if you swipe it away.
   - On **iOS**, the notification is kept alive by the app while it's open and is re-posted if dismissed.
@@ -53,7 +54,7 @@ Once granted permission, the app posts a single persistent notification that sho
 
 ```
 <City>
-<Temperature> °F · <Wind mph> <Wind dir> · <Precip>% precip
+<Temperature> (°F or °C) · <Wind speed (mph or km/h)> <Wind dir> · <Precip>% precip
 ```
 
 On Android, you can dismiss the notification to refresh it with up-to-date weather data based on your current location. **It does not update automatically.**
@@ -134,7 +135,7 @@ iOS binaries must be built on **macOS** with **Xcode**. You can develop the web 
    npm install
    ```
 
-2. If the `ios/` folder is missing (for example on a fresh clone), add the iOS platform:
+2. Add the iOS platform:
 
    ```bash
    npx cap add ios
