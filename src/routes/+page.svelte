@@ -3,7 +3,7 @@
     import { PUBLIC_API_KEY } from "$env/static/public";
     import { fetchWeatherForecast } from "$lib/weatherForecastApi";
     import { readForecastCache, writeForecastCache } from "$lib/weatherForecastCache";
-    import { clearWeatherNotification, syncWeatherNotification } from "$lib/weatherNotification";
+    import { syncWeatherNotification } from "$lib/weatherNotification";
     import { syncAlertNotifications } from "$lib/weatherAlertNotifications";
     import {
       buildDaily,
@@ -438,7 +438,6 @@
     /** Geolocate + forecast + optional notification sync (used after cache paint and for “My location”). */
     async function fetchForecastFromCurrentPosition(notify: boolean): Promise<boolean> {
       await stopGpsWatch();
-      await clearWeatherNotification();
       if (!(await ensureLocationPermission())) return false;
       const pos = await getAccurateInitialPosition();
       const { latitude, longitude } = pos.coords;
