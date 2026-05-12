@@ -111,6 +111,14 @@
     let lastSuggestQuery = "";
     let suppressSuggestOnce = false;
 
+    /** Window scroll Y captured on city input pointerdown; used to undo browser scroll-into-view / keyboard jumps. */
+    let scrollLockBeforeCityInput: number | null = null;
+    /** Snapshot before clearing on focus; restored on blur if the field is still empty. */
+    let cityRestoreSnapshot: string | null = null;
+    /** True after a successful forecast fetch triggered from the city field this focus session. */
+    let cityForecastCommittedThisFocus = false;
+    let cityBlurRestoreTimer: ReturnType<typeof setTimeout> | undefined;
+
     let locationWatchId: string | undefined;
     let lastWatchLat: number | null = null;
     let lastWatchLon: number | null = null;
@@ -452,6 +460,7 @@
 
     /** Geolocate + forecast + optional notification sync (used after cache paint and for “My location”). */
     async function fetchForecastFromCurrentPosition(notify: boolean): Promise<boolean> {
+      cancelCityBlurRevertTimer();
       await stopGpsWatch();
       if (!(await ensureLocationPermission())) return false;
       const pos = await getAccurateInitialPosition();
@@ -543,6 +552,7 @@
 
     onDestroy(() => {
       if (suggestTimer) clearTimeout(suggestTimer);
+      if (cityBlurRestoreTimer) clearTimeout(cityBlurRestoreTimer);
       void stopGpsWatch();
       unregisterHomeRefresh(onAppResumed);
     });
@@ -602,6 +612,82 @@
       }, 250);
     });
 
+    function scheduleScrollRestoreAfterCityFocus() {
+      if (scrollLockBeforeCityInput === null) return;
+      const top = scrollLockBeforeCityInput;
+      const left = window.scrollX;
+      scrollLockBeforeCityInput = null;
+      const snap = () => window.scrollTo(left, top);
+      snap();
+      queueMicrotask(snap);
+      requestAnimationFrame(snap);
+      requestAnimationFrame(() => requestAnimationFrame(snap));
+      for (const ms of [0, 50, 120, 280, 450]) setTimeout(snap, ms);
+    }
+
+    function onCitySearchPointerDown(e: PointerEvent) {
+      const input = e.currentTarget as HTMLInputElement;
+      if (document.activeElement !== input) {
+        scrollLockBeforeCityInput = window.scrollY;
+        input.focus({ preventScroll: true });
+      }
+    }
+
+    function onCityInputFocus() {
+      if (cityBlurRestoreTimer !== undefined) {
+        clearTimeout(cityBlurRestoreTimer);
+        cityBlurRestoreTimer = undefined;
+      }
+      if (cityRestoreSnapshot !== null) {
+        scheduleScrollRestoreAfterCityFocus();
+        return;
+      }
+      cityForecastCommittedThisFocus = false;
+      cityRestoreSnapshot = city;
+      city = "";
+      scheduleScrollRestoreAfterCityFocus();
+    }
+
+    function cancelCityBlurRevertTimer() {
+      if (cityBlurRestoreTimer !== undefined) {
+        clearTimeout(cityBlurRestoreTimer);
+        cityBlurRestoreTimer = undefined;
+      }
+      cityRestoreSnapshot = null;
+    }
+
+    function onCityInputBlur() {
+      cityBlurRestoreTimer = setTimeout(() => {
+        cityBlurRestoreTimer = undefined;
+        suggestionsOpen = false;
+        const trimmed = city.trim();
+        const hadSnapshot = cityRestoreSnapshot !== null;
+
+        if (trimmed === "" && hadSnapshot) {
+          suppressSuggestOnce = true;
+          suggestions = [];
+          suggestionsLoading = false;
+          suggestionsError = "";
+          highlightedSuggestionIdx = -1;
+          city = cityRestoreSnapshot!;
+        } else if (trimmed !== "" && !cityForecastCommittedThisFocus) {
+          suppressSuggestOnce = true;
+          suggestions = [];
+          suggestionsLoading = false;
+          suggestionsError = "";
+          highlightedSuggestionIdx = -1;
+          if (data?.location?.name) {
+            city = data.location.name;
+          } else if (hadSnapshot) {
+            city = cityRestoreSnapshot!;
+          }
+        }
+
+        cityRestoreSnapshot = null;
+        cityForecastCommittedThisFocus = false;
+      }, 120);
+    }
+
     function applySuggestion(s: WeatherApiCitySearchResult) {
       suppressSuggestOnce = true;
       city = `${s.name}, ${s.region ? `${s.region}, ` : ""}${s.country}`.replace(", ,", ",").trim();
@@ -639,6 +725,11 @@
         return;
       }
 
+      // Blur runs before this when tapping "Get Weather" / a suggestion; cancel the
+      // deferred revert — otherwise data is temporarily null mid-fetch and we snap
+      // city back to cityRestoreSnapshot from before the search.
+      cancelCityBlurRevertTimer();
+
       loading = true;
       data = null;
       notificationPayload = null;
@@ -652,6 +743,15 @@
         const resp = await fetchWeatherForecast(q);
         writeForecastCache(q, resp);
         applyForecastResponse(resp);
+        suppressSuggestOnce = true;
+        suggestions = [];
+        suggestionsOpen = false;
+        suggestionsLoading = false;
+        suggestionsError = "";
+        highlightedSuggestionIdx = -1;
+        if (suggestTimer) clearTimeout(suggestTimer);
+        city = resp.location.name;
+        cityForecastCommittedThisFocus = true;
       } catch (e: unknown) {
         error = e instanceof Error ? e.message : "Request failed";
         console.error(e);
@@ -668,9 +768,10 @@
     <input
       placeholder="City (default: your location)"
       bind:value={city}
+      onpointerdown={onCitySearchPointerDown}
       onkeydown={onCityKeyDown}
-      onfocus={() => (suggestionsOpen = suggestions.length > 0)}
-      onblur={() => setTimeout(() => (suggestionsOpen = false), 120)}
+      onfocus={onCityInputFocus}
+      onblur={onCityInputBlur}
       autocomplete="off"
       aria-autocomplete="list"
       aria-expanded={suggestionsOpen}
@@ -842,6 +943,8 @@
     box-sizing: border-box;
     /* 16px+ avoids iOS Safari zoom-on-focus and stays readable on tiny screens. */
     font-size: clamp(1rem, 0.92rem + 0.4vw, 1.05rem);
+    /* Reduce scroll-into-view padding when the UA still tries to center the focused field. */
+    scroll-margin-block: 0;
   }
 
   .actions {
