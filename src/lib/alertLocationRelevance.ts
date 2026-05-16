@@ -90,13 +90,28 @@ function escapeRegExp(s: string): string {
   return s.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
 }
 
-/** USPS codes explicitly mentioned in CAP-style {@code areas} text. */
-function statesMentionedInAreas(areasRaw: string): Set<string> {
-  const found = new Set<string>();
-  const areas = areasRaw.trim();
-  if (!areas) return found;
+const ALERT_TEXT_FIELDS = [
+  "headline",
+  "areas",
+  "event",
+  "note",
+  "desc",
+  "instruction",
+] as const satisfies readonly (keyof WeatherApiAlert)[];
 
-  const lower = areas.toLowerCase();
+function alertSearchText(alert: WeatherApiAlert): string {
+  return ALERT_TEXT_FIELDS.map((field) => alert[field])
+    .filter((v): v is string => typeof v === "string" && v.trim() !== "")
+    .join("\n");
+}
+
+/** USPS codes explicitly mentioned in CAP-style alert text. */
+function statesMentionedInAlertText(textRaw: string, areasRaw: string): Set<string> {
+  const found = new Set<string>();
+  const text = textRaw.trim();
+  if (!text) return found;
+
+  const lower = text.toLowerCase();
   for (const name of STATE_NAMES_LONG_TO_SHORT) {
     const re = new RegExp(`\\b${escapeRegExp(name)}\\b`, "i");
     if (re.test(lower)) {
@@ -107,7 +122,13 @@ function statesMentionedInAreas(areasRaw: string): Set<string> {
 
   const codeAfterDelim = /(?:^|[,;|])\s*([A-Za-z]{2})\b/g;
   let m: RegExpExecArray | null;
-  while ((m = codeAfterDelim.exec(areas)) !== null) {
+  while ((m = codeAfterDelim.exec(areasRaw)) !== null) {
+    const code = m[1].toUpperCase();
+    if (VALID_STATE_CODES.has(code)) found.add(code);
+  }
+
+  const nwsZoneCode = /\b([A-Z]{2})[CZ]\d{3}\b/g;
+  while ((m = nwsZoneCode.exec(text.toUpperCase())) !== null) {
     const code = m[1].toUpperCase();
     if (VALID_STATE_CODES.has(code)) found.add(code);
   }
@@ -116,9 +137,8 @@ function statesMentionedInAreas(areasRaw: string): Set<string> {
 }
 
 /**
- * For US locations with a known state, keeps an alert only when {@code areas} names no US state, or names
- * the user's state (or a territory) among others. If {@code areas} lists only other states, the alert is
- * dropped. When no state can be parsed from {@code areas}, the alert is kept.
+ * Fallback for US WeatherAPI alerts when exact NWS point alerts are unavailable: keep alerts that either
+ * name the user's state or do not name enough state information to prove they belong elsewhere.
  */
 export function filterAlertsForLocation(
   alerts: WeatherApiAlert[],
@@ -132,10 +152,11 @@ export function filterAlertsForLocation(
 
   return alerts.filter((alert) => {
     const areas = alert.areas?.trim() ?? "";
-    if (!areas) return true;
+    const text = alertSearchText(alert);
+    if (!text) return true;
 
     if (us && userState != null) {
-      const mentioned = statesMentionedInAreas(areas);
+      const mentioned = statesMentionedInAlertText(text, areas);
       if (mentioned.size > 0) {
         return mentioned.has(userState);
       }

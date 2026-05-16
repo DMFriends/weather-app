@@ -69,6 +69,7 @@ public class WeatherSyncWorker extends Worker {
                 WeatherNotificationHelper.showPersistedIfAvailable(ctx);
                 return;
             }
+            replaceUsAlertsWithNwsPointAlerts(root);
 
             JSONObject loc = root.getJSONObject("location");
             String title = loc.getString("name");
@@ -170,11 +171,100 @@ public class WeatherSyncWorker extends Worker {
         return Math.max(0, Math.min(100, Math.max(bestRain, bestSnow)));
     }
 
+    private static void replaceUsAlertsWithNwsPointAlerts(JSONObject root) {
+        try {
+            JSONObject loc = root.optJSONObject("location");
+            if (loc == null) return;
+            String country = loc.optString("country", "");
+            if (!isUnitedStatesCountry(country)) return;
+
+            double lat = loc.optDouble("lat", Double.NaN);
+            double lon = loc.optDouble("lon", Double.NaN);
+            if (Double.isNaN(lat) || Double.isNaN(lon)) return;
+
+            String point = String.format(Locale.US, "%.4f,%.4f", lat, lon);
+            String urlStr = "https://api.weather.gov/alerts/active?point=" + point;
+            JSONObject nwsRoot = new JSONObject(httpGet(urlStr));
+            JSONArray features = nwsRoot.optJSONArray("features");
+            JSONArray pointAlerts = new JSONArray();
+            if (features != null) {
+                for (int i = 0; i < features.length(); i++) {
+                    JSONObject feature = features.optJSONObject(i);
+                    JSONObject alert = nwsFeatureToWeatherApiAlert(feature);
+                    if (alert != null) pointAlerts.put(alert);
+                }
+            }
+
+            JSONObject alertsWrap = new JSONObject();
+            alertsWrap.put("alert", pointAlerts);
+            root.put("alerts", alertsWrap);
+        } catch (Exception e) {
+            Log.w(TAG, "NWS point alerts unavailable; using WeatherAPI alerts", e);
+        }
+    }
+
+    private static boolean isUnitedStatesCountry(String country) {
+        if (country == null || country.trim().isEmpty()) return false;
+        String u = country.trim().toUpperCase(Locale.ROOT);
+        return "US".equals(u) || "USA".equals(u) || u.contains("UNITED STATES");
+    }
+
+    @Nullable
+    private static JSONObject nwsFeatureToWeatherApiAlert(@Nullable JSONObject feature) throws Exception {
+        if (feature == null) return null;
+        JSONObject props = feature.optJSONObject("properties");
+        if (props == null) return null;
+
+        JSONObject out = new JSONObject();
+        putIfPresent(out, "identifier", firstNonEmpty(props.optString("id", ""), feature.optString("id", "")));
+        putIfPresent(out, "headline", props.optString("headline", ""));
+        putIfPresent(out, "msgtype", props.optString("messageType", ""));
+        putIfPresent(out, "severity", props.optString("severity", ""));
+        putIfPresent(out, "urgency", props.optString("urgency", ""));
+        putIfPresent(out, "areas", props.optString("areaDesc", ""));
+        putIfPresent(out, "category", normalizeNwsCategory(props.opt("category")));
+        putIfPresent(out, "certainty", props.optString("certainty", ""));
+        putIfPresent(out, "event", props.optString("event", ""));
+        putIfPresent(out, "effective", props.optString("effective", ""));
+        putIfPresent(out, "expires", props.optString("expires", ""));
+        putIfPresent(out, "desc", props.optString("description", ""));
+        putIfPresent(out, "instruction", props.optString("instruction", ""));
+        return out;
+    }
+
+    private static String normalizeNwsCategory(Object raw) {
+        if (raw instanceof JSONArray) {
+            JSONArray arr = (JSONArray) raw;
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < arr.length(); i++) {
+                String value = arr.optString(i, "");
+                if (TextUtils.isEmpty(value)) continue;
+                if (sb.length() > 0) sb.append(',');
+                sb.append(value);
+            }
+            return sb.toString();
+        }
+        return raw == null || raw == JSONObject.NULL ? "" : String.valueOf(raw);
+    }
+
+    private static String firstNonEmpty(String... parts) {
+        for (String p : parts) {
+            if (!TextUtils.isEmpty(p)) return p;
+        }
+        return "";
+    }
+
+    private static void putIfPresent(JSONObject out, String key, String value) throws Exception {
+        if (!TextUtils.isEmpty(value)) out.put(key, value);
+    }
+
     private static String httpGet(String urlStr) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) URI.create(urlStr).toURL().openConnection();
         conn.setConnectTimeout(20000);
         conn.setReadTimeout(20000);
         conn.setRequestMethod("GET");
+        conn.setRequestProperty("Accept", urlStr.contains("api.weather.gov") ? "application/geo+json" : "application/json");
+        conn.setRequestProperty("User-Agent", "weather-app/2.0 (github.com/DMFriends/weather-app)");
         int code = conn.getResponseCode();
         InputStream in = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
         if (in == null) throw new java.io.IOException("HTTP " + code);

@@ -32,6 +32,7 @@ export type WeatherApiLocation = {
 };
 
 export type WeatherApiAlert = {
+  identifier?: string;
   headline?: string;
   msgtype?: string;
   severity?: string;

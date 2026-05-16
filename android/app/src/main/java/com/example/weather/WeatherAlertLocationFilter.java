@@ -22,8 +22,11 @@ final class WeatherAlertLocationFilter {
     private static final Map<String, String> STATE_NAME_TO_CODE = new HashMap<>();
     private static final Set<String> VALID_CODES = new HashSet<>();
     private static final List<String> STATE_NAMES_LONG_TO_SHORT = new ArrayList<>();
+    private static final String[] ALERT_TEXT_FIELDS =
+        new String[] { "headline", "areas", "event", "note", "desc", "instruction" };
 
     private static final Pattern CODE_AFTER_DELIM = Pattern.compile("(?:^|[,;|])\\s*([A-Za-z]{2})\\b");
+    private static final Pattern NWS_ZONE_CODE = Pattern.compile("\\b([A-Z]{2})[CZ]\\d{3}\\b");
 
     static {
         put("alabama", "AL");
@@ -98,14 +101,15 @@ final class WeatherAlertLocationFilter {
     static boolean isAlertRelevantToLocation(JSONObject alert, @Nullable JSONObject locationObj) {
         if (locationObj == null || alert == null) return true;
         String areas = trim(alert.optString("areas", ""));
-        if (areas.isEmpty()) return true;
+        String text = alertSearchText(alert);
+        if (text.isEmpty()) return true;
 
         String country = trim(locationObj.optString("country", ""));
         boolean us = isUnitedStatesCountry(country);
         String userState = us ? userUsStateCode(trim(locationObj.optString("region", ""))) : null;
 
         if (us && userState != null) {
-            Set<String> mentioned = statesMentionedInAreas(areas);
+            Set<String> mentioned = statesMentionedInAlertText(text, areas);
             if (!mentioned.isEmpty()) {
                 return mentioned.contains(userState);
             }
@@ -132,22 +136,40 @@ final class WeatherAlertLocationFilter {
         return fromName;
     }
 
-    private static Set<String> statesMentionedInAreas(String areasRaw) {
+    private static String alertSearchText(JSONObject alert) {
+        StringBuilder sb = new StringBuilder();
+        for (String field : ALERT_TEXT_FIELDS) {
+            String value = trim(alert.optString(field, ""));
+            if (!value.isEmpty()) {
+                if (sb.length() > 0) sb.append('\n');
+                sb.append(value);
+            }
+        }
+        return sb.toString();
+    }
+
+    private static Set<String> statesMentionedInAlertText(String textRaw, String areasRaw) {
         Set<String> found = new HashSet<>();
-        String areas = areasRaw.trim();
-        if (areas.isEmpty()) return found;
+        String text = textRaw.trim();
+        if (text.isEmpty()) return found;
 
         for (String name : STATE_NAMES_LONG_TO_SHORT) {
             Pattern re = Pattern.compile("\\b" + Pattern.quote(name) + "\\b", Pattern.CASE_INSENSITIVE);
-            if (re.matcher(areas).find()) {
+            if (re.matcher(text).find()) {
                 String code = STATE_NAME_TO_CODE.get(name);
                 if (code != null) found.add(code);
             }
         }
 
-        Matcher m = CODE_AFTER_DELIM.matcher(areas);
+        Matcher m = CODE_AFTER_DELIM.matcher(areasRaw);
         while (m.find()) {
             String code = m.group(1).toUpperCase(Locale.ROOT);
+            if (VALID_CODES.contains(code)) found.add(code);
+        }
+
+        Matcher zone = NWS_ZONE_CODE.matcher(text.toUpperCase(Locale.ROOT));
+        while (zone.find()) {
+            String code = zone.group(1).toUpperCase(Locale.ROOT);
             if (VALID_CODES.contains(code)) found.add(code);
         }
         return found;
