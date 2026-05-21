@@ -37,6 +37,10 @@ public final class WeatherAlertNotifier {
     private static final int ALERT_NOTIFICATION_ID_BASE = 80_000;
     private static final int ALERT_NOTIFICATION_ID_RANGE = 9_000;
 
+    private static String alertNotificationTag(int id) {
+        return "weather_alert_" + id;
+    }
+
     private static final Pattern WS = Pattern.compile("\\s+");
 
     private WeatherAlertNotifier() {}
@@ -47,7 +51,7 @@ public final class WeatherAlertNotifier {
         if (nm == null) return;
         for (int id = ALERT_NOTIFICATION_ID_BASE; id < ALERT_NOTIFICATION_ID_BASE + ALERT_NOTIFICATION_ID_RANGE; id++) {
             try {
-                nm.cancel(null, id);
+                nm.cancel(alertNotificationTag(id), id);
             } catch (Exception ignored) {
             }
         }
@@ -164,7 +168,7 @@ public final class WeatherAlertNotifier {
                     .setCategory(NotificationCompat.CATEGORY_ALARM)
                     .setVisibility(NotificationCompat.VISIBILITY_PUBLIC);
 
-            nm.notify("weather_alert_" + id, id, b.build());
+            nm.notify(alertNotificationTag(id), id, b.build());
             Log.i(TAG, "Scheduled alert notification id=" + id + " key.len=" + key.length());
         }
 

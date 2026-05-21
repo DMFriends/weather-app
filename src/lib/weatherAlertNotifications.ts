@@ -40,18 +40,55 @@ let lastAlertLocation: WeatherApiLocation | null = null;
 let lastPushedAlertsLocationKey: string | null = null;
 let lastPushedAlertsFingerprint: string | null = null;
 
+let alertExpiryRecheckTimer: ReturnType<typeof setTimeout> | undefined;
+
 function scheduleLocationKey(loc: { lat: number; lon: number } | null): string | null {
   if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lon)) return null;
   return `${loc.lat.toFixed(3)},${loc.lon.toFixed(3)}`;
 }
 
-/** Stable fingerprint of current alerts for comparing sets across opens (sorted dedup keys). */
+function parseExpires(s: string | undefined): number {
+  if (!s) return Date.now() + 24 * 3600 * 1000;
+  const t = new Date(s).getTime();
+  return Number.isFinite(t) ? t : Date.now() + 24 * 3600 * 1000;
+}
+
+/** Alerts that are still within their expiry window (matches OS scheduling). */
+function filterActiveAlerts(alerts: WeatherApiAlert[], now = Date.now()): WeatherApiAlert[] {
+  return (alerts ?? []).filter((a) => parseExpires(a.expires) >= now);
+}
+
+/** Stable fingerprint of non-expired alerts for comparing sets across opens (sorted dedup keys). */
 function activeAlertsFingerprint(alerts: WeatherApiAlert[]): string {
-  const keys = alerts
+  const keys = filterActiveAlerts(alerts)
     .map((a) => weatherAlertDedupKey(a))
     .filter((k) => k.replace(/\|/g, "").trim() !== "")
     .sort();
   return JSON.stringify(keys);
+}
+
+/** Re-sync OS notifications when the next alert expires without waiting for a forecast refresh. */
+function scheduleActiveAlertExpiryRecheck(alerts: WeatherApiAlert[]): void {
+  if (alertExpiryRecheckTimer !== undefined) {
+    clearTimeout(alertExpiryRecheckTimer);
+    alertExpiryRecheckTimer = undefined;
+  }
+  if (!Capacitor.isNativePlatform()) return;
+
+  const now = Date.now();
+  let nextExpiryMs = Infinity;
+  for (const a of alerts ?? []) {
+    const exp = parseExpires(a.expires);
+    if (exp > now) nextExpiryMs = Math.min(nextExpiryMs, exp);
+  }
+  if (!Number.isFinite(nextExpiryMs)) return;
+
+  const delay = Math.min(Math.max(0, nextExpiryMs - now + 500), 24 * 3600 * 1000);
+  alertExpiryRecheckTimer = setTimeout(() => {
+    alertExpiryRecheckTimer = undefined;
+    void pushAlertNotificationsIfNeeded(lastAlertsSnapshot);
+    scheduleActiveAlertExpiryRecheck(lastAlertsSnapshot);
+  }, delay);
 }
 
 async function pushAlertNotificationsIfNeeded(alerts: WeatherApiAlert[]): Promise<void> {
@@ -61,19 +98,23 @@ async function pushAlertNotificationsIfNeeded(alerts: WeatherApiAlert[]): Promis
   const unchanged =
     lastPushedAlertsFingerprint === fp && lastPushedAlertsLocationKey === locKey;
 
-  if (unchanged) return;
+  if (unchanged) {
+    // Recover from a prior failed OS cancel (e.g. Android tag mismatch) when nothing is active.
+    if (fp === "[]" && Capacitor.isNativePlatform()) {
+      await cancelAllWeatherAlertOsNotifications();
+    }
+    return;
+  }
 
-  const ok = await schedulePendingAlertNotifications(alerts ?? []);
+  const ok = await schedulePendingAlertNotifications(filterActiveAlerts(alerts ?? []));
   if (ok) {
     lastPushedAlertsLocationKey = locKey;
     lastPushedAlertsFingerprint = fp;
   }
 }
 
-export function setAlertNotificationsAppActive(isActive: boolean): void {
-  if (!isActive) {
-    void pushAlertNotificationsIfNeeded(lastAlertsSnapshot);
-  }
+export function setAlertNotificationsAppActive(_isActive: boolean): void {
+  void pushAlertNotificationsIfNeeded(lastAlertsSnapshot);
 }
 
 function parseNotifiedJson(raw: string): NotifiedMap {
@@ -198,12 +239,6 @@ function hashForId(s: string): number {
   return Math.abs(h) % ALERT_NOTIFICATION_ID_RANGE;
 }
 
-function parseExpires(s: string | undefined): number {
-  if (!s) return Date.now() + 24 * 3600 * 1000;
-  const t = new Date(s).getTime();
-  return Number.isFinite(t) ? t : Date.now() + 24 * 3600 * 1000;
-}
-
 async function ensureAlertChannel() {
   if (Capacitor.getPlatform() !== "android") return;
   if (alertChannelEnsured) return;
@@ -227,7 +262,7 @@ function buildForecastRootJsonForNative(
   location: WeatherApiLocation | null,
 ): string {
   const root: Record<string, unknown> = {
-    alerts: { alert: alerts },
+    alerts: { alert: filterActiveAlerts(alerts) },
   };
   if (
     location &&
@@ -296,6 +331,7 @@ export async function syncAlertNotifications(
   }
 
   if (!Capacitor.isNativePlatform()) return;
+  scheduleActiveAlertExpiryRecheck(lastAlertsSnapshot);
   await pushAlertNotificationsIfNeeded(lastAlertsSnapshot);
 }
 
