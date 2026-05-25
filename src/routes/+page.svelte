@@ -115,12 +115,11 @@
     let bgPromptOfferedThisSession = $state(false);
     let bgConsentBusy = $state(false);
 
-    // Horizontal accuracy (meters). With fine permission we only accept GPS-class fixes;
-    // worse candidates are ignored so the API does not snap to a “nearby” area.
-    const PRECISE_TARGET_M = 50;
-    const PRECISE_ACCEPTABLE_M = 200;
-    /** Ignore readings worse than this when precise is granted (filters tower / fused blobs). */
-    const PRECISE_CANDIDATE_MAX_M = 320;
+    // Horizontal accuracy (meters). Prefer GPS-class fixes but accept network/cached sooner.
+    const PRECISE_TARGET_M = 100;
+    const PRECISE_ACCEPTABLE_M = 800;
+    /** Ignore readings worse than this when precise is granted. */
+    const PRECISE_CANDIDATE_MAX_M = 3_000;
 
     const APPROX_TARGET_M = 10_000;
     const APPROX_ACCEPTABLE_M = 25_000;
@@ -132,8 +131,10 @@
 
     type PositionStrategy = {
       enableHighAccuracy: boolean;
-      /** Android: avoid extra LocationManager path that can return low-quality fixes. */
+      /** Android: allow network/cell path when GPS is slow to warm up. */
       enableLocationFallback: boolean;
+      /** Reuse a recent platform fix instead of always cold-starting GPS. */
+      maximumAgeMs: number;
       targetM: number;
       acceptableM: number;
       maxM: number;
@@ -146,21 +147,23 @@
         return {
           enableHighAccuracy: false,
           enableLocationFallback: true,
+          maximumAgeMs: 120_000,
           targetM: APPROX_TARGET_M,
           acceptableM: APPROX_ACCEPTABLE_M,
           maxM: APPROX_MAX_M,
-          initialWaitMs: 5_000,
-          maxWaitMs: 15_000,
+          initialWaitMs: 3_000,
+          maxWaitMs: 12_000,
         };
       }
       return {
         enableHighAccuracy: true,
-        enableLocationFallback: false,
+        enableLocationFallback: true,
+        maximumAgeMs: 90_000,
         targetM: PRECISE_TARGET_M,
         acceptableM: PRECISE_ACCEPTABLE_M,
         maxM: PRECISE_CANDIDATE_MAX_M,
-        initialWaitMs: 12_000,
-        maxWaitMs: 35_000,
+        initialWaitMs: 4_000,
+        maxWaitMs: 18_000,
       };
     }
 
@@ -182,7 +185,7 @@
 
     /**
      * Stream fixes and return the best within deadlines. Uses watchPosition when
-     * available so cold-start network guesses can be skipped in precise mode.
+     * available; network fallback and maximumAge allow a fast first fix when GPS is cold.
      */
     async function getInitialPositionWithStrategy(mode: GeoPrecisionMode): Promise<GeoPosition> {
       const s = strategyForPrecisionMode(mode);
@@ -223,7 +226,7 @@
             watchId = await Geolocation.watchPosition(
               {
                 enableHighAccuracy: s.enableHighAccuracy,
-                maximumAge: 0,
+                maximumAge: s.maximumAgeMs,
                 timeout: s.maxWaitMs,
                 enableLocationFallback: s.enableLocationFallback,
               },
@@ -239,7 +242,7 @@
             try {
               const pos = await Geolocation.getCurrentPosition({
                 enableHighAccuracy: s.enableHighAccuracy,
-                maximumAge: 0,
+                maximumAge: s.maximumAgeMs,
                 timeout: s.maxWaitMs,
                 enableLocationFallback: s.enableLocationFallback,
               });
@@ -277,7 +280,7 @@
     }
 
     /**
-     * Fine permission → high-accuracy pipeline only (no approximate fallback).
+     * Fine permission → prefer high-accuracy GPS but accept network/cached fixes under deadlines.
      * Approximate OS setting → coarse pipeline only.
      */
     async function getAccurateInitialPosition(): Promise<GeoPosition> {
