@@ -11,7 +11,8 @@ import pkg from './package.json' with { type: 'json' };
  *   2. Latest reachable git tag from `describe --abbrev=0`. Clean tree → that
  *      tag verbatim (HEAD may be on the tag or on descendant commits). Dirty tree
  *      → bump last segment + `-dev` (e.g. reachable tag `v2.0` + local changes →
- *      `2.1-dev`, including when HEAD is past that tag).
+ *      `2.1-dev`, including when HEAD is past that tag). On a major-line anchor
+ *      tag (v3.0, v4.0, …) dirty builds stay at `X.0-dev` until the next tag.
  *   3. package.json `version` as a last-resort fallback (e.g. shallow clones,
  *      tarball builds, or a fresh repo with no tags yet).
  */
@@ -41,6 +42,17 @@ function bumpLastSegment(version: string): string {
 	return parts.join('.');
 }
 
+/** Dev builds on a major-line anchor (e.g. v3.0) stay at X.0-dev until the next tag. */
+function resolveDevVersion(cleanTag: string): string {
+	const parts = cleanTag.split('.');
+	const major = Number.parseInt(parts[0] ?? '', 10);
+	const minor = Number.parseInt(parts[1] ?? '0', 10);
+	if (Number.isFinite(major) && major >= 3 && minor === 0 && parts.length === 2) {
+		return `${cleanTag}-dev`;
+	}
+	return `${bumpLastSegment(cleanTag)}-dev`;
+}
+
 function resolveAppVersion(): string {
 	if (process.env.APP_VERSION) return process.env.APP_VERSION.replace(/^v/i, '');
 
@@ -56,7 +68,7 @@ function resolveAppVersion(): string {
 	const isClean = tryGit(['status', '--porcelain']).stdout === '';
 
 	if (isClean) return cleanTag;
-	return `${bumpLastSegment(cleanTag)}-dev`;
+	return resolveDevVersion(cleanTag);
 }
 
 const APP_VERSION = resolveAppVersion();

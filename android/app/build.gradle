@@ -43,6 +43,22 @@ def bumpLastSegment = { String version ->
     }
 }
 
+def resolveDevVersion = { String cleanTag ->
+    def parts = cleanTag.split(/\./)
+    if (parts.length == 2) {
+        try {
+            def major = Integer.parseInt(parts[0])
+            def minor = Integer.parseInt(parts[1])
+            if (major >= 3 && minor == 0) {
+                return "${cleanTag}-dev"
+            }
+        } catch (NumberFormatException ignored) {
+            // fall through to bumpLastSegment
+        }
+    }
+    return "${bumpLastSegment(cleanTag)}-dev"
+}
+
 def computeAppVersion = { ->
     def envVersion = System.getenv("APP_VERSION")
     if (envVersion?.trim()) {
@@ -57,7 +73,7 @@ def computeAppVersion = { ->
         def isClean = runGit(["status", "--porcelain"]).stdout.isEmpty()
 
         if (isClean) return cleanTag
-        return "${bumpLastSegment(cleanTag)}-dev"
+        return resolveDevVersion(cleanTag)
     } catch (Exception ignored) {
         // git not available, shallow clone, etc.
     }
