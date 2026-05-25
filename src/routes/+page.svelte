@@ -4,6 +4,17 @@
       fetchCitySearchSuggestions,
       type CitySearchSuggestion,
     } from "$lib/citySearchSuggestions";
+    import {
+      buildQueryFromSuggestion,
+      favoriteFromSuggestion,
+      favoriteFromWeatherLocation,
+      matchesFavoriteLocation,
+      readFavoriteLocations,
+      removeFavoriteLocation,
+      syncFavoriteWithWeatherLocation,
+      toggleFavoriteLocation,
+      type FavoriteLocation,
+    } from "$lib/favoriteLocations";
     import { fetchWeatherForecast } from "$lib/weatherForecastApi";
     import { readForecastCache, writeForecastCache } from "$lib/weatherForecastCache";
     import { persistAndroidNotificationTempPreference, syncWeatherNotification } from "$lib/weatherNotification";
@@ -90,6 +101,23 @@
     let suggestionsLoading = $state(false);
     let suggestionsError = $state("");
     let highlightedSuggestionIdx: number = $state(-1);
+    let favorites: FavoriteLocation[] = $state(readFavoriteLocations());
+    let cityInputFocused = $state(false);
+
+    let favoritesOpen = $derived(
+      cityInputFocused && city.trim().length < 2 && favorites.length > 0 && !suggestionsOpen
+    );
+
+    function isLatLonFavorite(lat: number, lon: number, query?: string): boolean {
+      return matchesFavoriteLocation(favorites, lat, lon, query);
+    }
+
+    let isCurrentFavorite = $derived.by(() => {
+      const d = data;
+      if (!d) return false;
+      const cached = readForecastCache<WeatherApiResponse>();
+      return isLatLonFavorite(d.location.lat, d.location.lon, cached?.query);
+    });
 
     let suggestTimer: ReturnType<typeof setTimeout> | undefined;
     let suggestAbort: AbortController | undefined;
@@ -626,7 +654,77 @@
       }
     }
 
+    function refreshFavorites() {
+      favorites = readFavoriteLocations();
+    }
+
+    function toggleFavoriteForSuggestion(s: WeatherApiCitySearchResult, e: MouseEvent) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleFavoriteLocation(favoriteFromSuggestion(s));
+      refreshFavorites();
+    }
+
+    function toggleFavoriteForCurrent() {
+      if (!data) return;
+      const cached = readForecastCache<WeatherApiResponse>();
+      const query = cached?.query ?? `${data.location.lat},${data.location.lon}`;
+      toggleFavoriteLocation(favoriteFromWeatherLocation(data.location, query));
+      refreshFavorites();
+    }
+
+    function removeFavorite(id: string, e?: MouseEvent) {
+      e?.preventDefault();
+      e?.stopPropagation();
+      removeFavoriteLocation(id);
+      refreshFavorites();
+    }
+
+    async function loadForecastForQuery(q: string) {
+      error = "";
+      cancelCityBlurRevertTimer();
+      loading = true;
+      data = null;
+      notificationPayload = null;
+      notificationSyncEnabled = false;
+      hourly = [];
+      daily = [];
+      currentPrecipChancePct = null;
+
+      try {
+        await stopGpsWatch();
+        const resp = await fetchWeatherForecast(q);
+        writeForecastCache(q, resp);
+        syncFavoriteWithWeatherLocation(q, resp.location);
+        refreshFavorites();
+        applyForecastResponse(resp);
+        suppressSuggestOnce = true;
+        suggestions = [];
+        suggestionsOpen = false;
+        suggestionsLoading = false;
+        suggestionsError = "";
+        highlightedSuggestionIdx = -1;
+        if (suggestTimer) clearTimeout(suggestTimer);
+        city = resp.location.name;
+        cityForecastCommittedThisFocus = true;
+      } catch (e: unknown) {
+        error = e instanceof Error ? e.message : "Request failed";
+        console.error(e);
+      } finally {
+        loading = false;
+      }
+    }
+
+    async function applyFavorite(f: FavoriteLocation) {
+      suppressSuggestOnce = true;
+      city = f.label;
+      highlightedSuggestionIdx = -1;
+      await loadForecastForQuery(f.query);
+    }
+
     function onCityInputFocus() {
+      cityInputFocused = true;
+      highlightedSuggestionIdx = -1;
       if (cityBlurRestoreTimer !== undefined) {
         clearTimeout(cityBlurRestoreTimer);
         cityBlurRestoreTimer = undefined;
@@ -678,31 +776,41 @@
 
         cityRestoreSnapshot = null;
         cityForecastCommittedThisFocus = false;
+        cityInputFocused = false;
       }, 120);
     }
 
     function applySuggestion(s: WeatherApiCitySearchResult) {
       suppressSuggestOnce = true;
-      city = `${s.name}, ${s.region ? `${s.region}, ` : ""}${s.country}`.replace(", ,", ",").trim();
+      city = buildQueryFromSuggestion(s);
       suggestions = [];
       suggestionsOpen = false;
       highlightedSuggestionIdx = -1;
-      void fetchWeather();
+      void loadForecastForQuery(city);
     }
 
     function onCityKeyDown(e: KeyboardEvent) {
-      if (!suggestionsOpen || !suggestions.length) return;
+      const listLength = favoritesOpen
+        ? favorites.length
+        : suggestionsOpen
+          ? suggestions.length
+          : 0;
+      if (!listLength) return;
 
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        highlightedSuggestionIdx = Math.min(suggestions.length - 1, highlightedSuggestionIdx + 1);
+        highlightedSuggestionIdx = Math.min(listLength - 1, highlightedSuggestionIdx + 1);
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
         highlightedSuggestionIdx = Math.max(0, highlightedSuggestionIdx - 1);
       } else if (e.key === "Enter") {
-        if (highlightedSuggestionIdx >= 0 && highlightedSuggestionIdx < suggestions.length) {
+        if (highlightedSuggestionIdx >= 0 && highlightedSuggestionIdx < listLength) {
           e.preventDefault();
-          applySuggestion(suggestions[highlightedSuggestionIdx]);
+          if (favoritesOpen) {
+            void applyFavorite(favorites[highlightedSuggestionIdx]);
+          } else {
+            applySuggestion(suggestions[highlightedSuggestionIdx]);
+          }
         }
       } else if (e.key === "Escape") {
         suggestionsOpen = false;
@@ -711,46 +819,12 @@
     }
 
     async function fetchWeather() {
-      error = "";
       const q = city.trim();
       if (!q) {
         error = "Enter a city or use current location.";
         return;
       }
-
-      // Blur runs before this when tapping "Get Weather" / a suggestion; cancel the
-      // deferred revert — otherwise data is temporarily null mid-fetch and we snap
-      // city back to cityRestoreSnapshot from before the search.
-      cancelCityBlurRevertTimer();
-
-      loading = true;
-      data = null;
-      notificationPayload = null;
-      notificationSyncEnabled = false;
-      hourly = [];
-      daily = [];
-      currentPrecipChancePct = null;
-
-      try {
-        await stopGpsWatch();
-        const resp = await fetchWeatherForecast(q);
-        writeForecastCache(q, resp);
-        applyForecastResponse(resp);
-        suppressSuggestOnce = true;
-        suggestions = [];
-        suggestionsOpen = false;
-        suggestionsLoading = false;
-        suggestionsError = "";
-        highlightedSuggestionIdx = -1;
-        if (suggestTimer) clearTimeout(suggestTimer);
-        city = resp.location.name;
-        cityForecastCommittedThisFocus = true;
-      } catch (e: unknown) {
-        error = e instanceof Error ? e.message : "Request failed";
-        console.error(e);
-      } finally {
-        loading = false;
-      }
+      await loadForecastForQuery(q);
     }
 </script>
 
@@ -767,7 +841,7 @@
       onblur={onCityInputBlur}
       autocomplete="off"
       aria-autocomplete="list"
-      aria-expanded={suggestionsOpen}
+      aria-expanded={suggestionsOpen || favoritesOpen}
       aria-controls="city-suggestions"
     />
 
@@ -777,19 +851,57 @@
       <div class="suggest-hint error">{suggestionsError}</div>
     {/if}
 
-    {#if suggestionsOpen}
+    {#if favoritesOpen}
+      <div id="city-suggestions" class="suggestions" role="listbox" aria-label="Favorite locations">
+        <div class="suggestions-section-label">Favorites</div>
+        {#each favorites as f, idx (f.id)}
+          <div class="suggestion-row">
+            <button
+              type="button"
+              class="suggestion {idx === highlightedSuggestionIdx ? 'active' : ''}"
+              role="option"
+              aria-selected={idx === highlightedSuggestionIdx}
+              onclick={() => void applyFavorite(f)}
+            >
+              <div class="suggestion-name">{f.label.split(",")[0]}</div>
+              <div class="suggestion-meta">
+                {f.region ? `${f.region} • ` : ""}{f.country ?? ""}
+              </div>
+            </button>
+            <button
+              type="button"
+              class="favorite-toggle is-favorite"
+              aria-label="Remove {f.label} from favorites"
+              onclick={(e) => removeFavorite(f.id, e)}
+            >
+              ★
+            </button>
+          </div>
+        {/each}
+      </div>
+    {:else if suggestionsOpen}
       <div id="city-suggestions" class="suggestions" role="listbox">
         {#each suggestions as s, idx (s.url || `${idx}|${String(s.lat)}|${String(s.lon)}|${s.name}|${s.country}`)}
-          <button
-            type="button"
-            class="suggestion {idx === highlightedSuggestionIdx ? 'active' : ''}"
-            role="option"
-            aria-selected={idx === highlightedSuggestionIdx}
-            onclick={() => applySuggestion(s)}
-          >
-            <div class="suggestion-name">{s.name}</div>
-            <div class="suggestion-meta">{s.region ? `${s.region} • ` : ""}{s.country}</div>
-          </button>
+          <div class="suggestion-row">
+            <button
+              type="button"
+              class="suggestion {idx === highlightedSuggestionIdx ? 'active' : ''}"
+              role="option"
+              aria-selected={idx === highlightedSuggestionIdx}
+              onclick={() => applySuggestion(s)}
+            >
+              <div class="suggestion-name">{s.name}</div>
+              <div class="suggestion-meta">{s.region ? `${s.region} • ` : ""}{s.country}</div>
+            </button>
+            <button
+              type="button"
+              class="favorite-toggle {isLatLonFavorite(s.lat, s.lon) ? 'is-favorite' : ''}"
+              aria-label="{isLatLonFavorite(s.lat, s.lon) ? 'Remove' : 'Add'} {s.name} {isLatLonFavorite(s.lat, s.lon) ? 'from' : 'to'} favorites"
+              onclick={(e) => toggleFavoriteForSuggestion(s, e)}
+            >
+              {isLatLonFavorite(s.lat, s.lon) ? "★" : "☆"}
+            </button>
+          </div>
         {/each}
       </div>
     {/if}
@@ -856,7 +968,17 @@
 
   {#if data}
     <div class="card">
-      <h2>{data.location.name}</h2>
+      <div class="card-header">
+        <h2>{data.location.name}</h2>
+        <button
+          type="button"
+          class="favorite-toggle card-favorite {isCurrentFavorite ? 'is-favorite' : ''}"
+          aria-label="{isCurrentFavorite ? 'Remove' : 'Add'} {data.location.name} {isCurrentFavorite ? 'from' : 'to'} favorites"
+          onclick={toggleFavoriteForCurrent}
+        >
+          {isCurrentFavorite ? "★" : "☆"}
+        </button>
+      </div>
       <p>🌡️ {formatTempPrecise(data.current.temp_f, tempUnit)}</p>
       <p>
         💨 {formatWindSpeed(data.current.wind_mph, tempUnit)} {data.current.wind_dir} ({Math.round(
@@ -1000,6 +1122,16 @@
     z-index: 10;
   }
 
+  .suggestion-row {
+    display: flex;
+    align-items: stretch;
+  }
+
+  .suggestion-row .suggestion {
+    flex: 1;
+    min-width: 0;
+  }
+
   .suggestion {
     width: 100%;
     text-align: left;
@@ -1012,6 +1144,50 @@
   .suggestion:hover,
   .suggestion.active {
     background: #f3f3f3;
+  }
+
+  .suggestions-section-label {
+    padding: 0.45rem 0.75rem 0.25rem;
+    font-size: clamp(0.72rem, 0.68rem + 0.15vw, 0.82rem);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.55;
+  }
+
+  .favorite-toggle {
+    flex-shrink: 0;
+    border: 0;
+    background: transparent;
+    padding: 0 0.65rem;
+    cursor: pointer;
+    font-size: 1.15rem;
+    line-height: 1;
+    color: #aaa;
+  }
+
+  .favorite-toggle.is-favorite {
+    color: #e6a800;
+  }
+
+  .favorite-toggle:hover {
+    color: #e6a800;
+  }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .card-header h2 {
+    margin: 0;
+  }
+
+  .card-favorite {
+    padding: 0.15rem 0.35rem;
   }
 
   .suggestion-name {
