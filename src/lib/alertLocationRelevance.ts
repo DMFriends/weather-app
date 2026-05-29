@@ -137,8 +137,8 @@ function statesMentionedInAlertText(textRaw: string, areasRaw: string): Set<stri
 }
 
 /**
- * Fallback for US WeatherAPI alerts when exact NWS point alerts are unavailable: keep alerts that either
- * name the user's state or do not name enough state information to prove they belong elsewhere.
+ * Keep US WeatherAPI alerts that either name the user's state or do not name
+ * enough state information to prove they belong elsewhere.
  */
 export function filterAlertsForLocation(
   alerts: WeatherApiAlert[],
