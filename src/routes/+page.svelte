@@ -144,7 +144,9 @@
     let bgConsentBusy = $state(false);
 
     // Horizontal accuracy (meters). Prefer GPS-class fixes but accept network/cached sooner.
-    const PRECISE_TARGET_M = 100;
+    // 250 m is well within what a city/area-level forecast needs, and lets the watch
+    // resolve on the first or second callback instead of holding out for a tight GPS lock.
+    const PRECISE_TARGET_M = 250;
     const PRECISE_ACCEPTABLE_M = 800;
     /** Ignore readings worse than this when precise is granted. */
     const PRECISE_CANDIDATE_MAX_M = 3_000;
@@ -166,6 +168,8 @@
       targetM: number;
       acceptableM: number;
       maxM: number;
+      /** Accept an "acceptable" fix immediately if it lands within this window (i.e. a cached platform fix). */
+      instantAcceptWindowMs: number;
       initialWaitMs: number;
       maxWaitMs: number;
     };
@@ -179,7 +183,8 @@
           targetM: APPROX_TARGET_M,
           acceptableM: APPROX_ACCEPTABLE_M,
           maxM: APPROX_MAX_M,
-          initialWaitMs: 3_000,
+          instantAcceptWindowMs: 1_000,
+          initialWaitMs: 1_500,
           maxWaitMs: 12_000,
         };
       }
@@ -190,8 +195,9 @@
         targetM: PRECISE_TARGET_M,
         acceptableM: PRECISE_ACCEPTABLE_M,
         maxM: PRECISE_CANDIDATE_MAX_M,
-        initialWaitMs: 4_000,
-        maxWaitMs: 18_000,
+        instantAcceptWindowMs: 1_200,
+        initialWaitMs: 2_000,
+        maxWaitMs: 10_000,
       };
     }
 
@@ -219,6 +225,7 @@
       const s = strategyForPrecisionMode(mode);
 
       return await new Promise<GeoPosition>((resolve, reject) => {
+        const startedAt = Date.now();
         let best: GeoPosition | null = null;
         let watchId: string | undefined;
         let settled = false;
@@ -263,7 +270,15 @@
                 const acc = position.coords.accuracy;
                 if (!Number.isFinite(acc) || acc > s.maxM) return;
                 if (!best || acc < best.coords.accuracy) best = position;
-                if (acc <= s.targetM) finish(position);
+                if (acc <= s.targetM) {
+                  finish(position);
+                  return;
+                }
+                // A good-enough fix that arrives almost instantly is a cached platform
+                // fix; take it now rather than waiting out initialWaitMs for a tighter lock.
+                if (acc <= s.acceptableM && Date.now() - startedAt <= s.instantAcceptWindowMs) {
+                  finish(position);
+                }
               }
             );
           } catch {
@@ -436,9 +451,13 @@
       bgLocPromptOpen = false;
     }
 
-    /** Layout invokes when the native app resumes from background. */
+    /**
+     * Layout invokes when the native app resumes from background. Resuming must
+     * not auto-trigger the current-location fetch (that only happens on a fresh
+     * launch), so this only runs lightweight housekeeping. The active GPS watch
+     * started on the initial load keeps the forecast current as the user moves.
+     */
     async function onAppResumed() {
-      await loadWeatherOnOpenOrResume();
       await closeBgPromptIfGranted();
     }
 
@@ -492,7 +511,7 @@
       return true;
     }
 
-    /** Open / resume: paint last cached forecast immediately, then refresh from current GPS in the background. */
+    /** Fresh launch: paint last cached forecast immediately, then refresh from current GPS in the background. */
     async function loadWeatherOnOpenOrResume() {
       error = "";
       // Mark before the network call so that a back-nav while we're fetching
