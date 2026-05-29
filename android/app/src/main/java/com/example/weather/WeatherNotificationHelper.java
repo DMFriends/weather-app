@@ -129,4 +129,44 @@ public final class WeatherNotificationHelper {
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm != null) nm.cancel(UPDATING_NOTIFICATION_ID);
     }
+
+    /**
+     * Posts an error notification in the weather slot when a user-initiated refresh fails (e.g. the
+     * device location couldn't be resolved or the network call failed). Reuses {@link #NOTIFICATION_ID}
+     * so it replaces the swiped-away weather notification — the user always gets something back — and
+     * carries the same delete intent so a swipe retries the refresh, plus a content intent to open the
+     * app. A later successful {@link #show} overwrites this in place.
+     */
+    public static void showError(Context context, String title, String body) {
+        ensureChannel(context);
+        Intent launch = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
+        if (launch == null) launch = new Intent();
+        int piFlags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
+        PendingIntent contentPi = PendingIntent.getActivity(context, 1, launch, piFlags);
+
+        Intent dismiss = new Intent(context, WeatherDismissReceiver.class);
+        PendingIntent deletePi =
+            PendingIntent.getBroadcast(context, NOTIFICATION_ID, dismiss, piFlags);
+
+        NotificationCompat.Builder b = new NotificationCompat.Builder(context, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+            .setSmallIcon(R.drawable.ic_stat_weather_rain)
+            .setContentIntent(contentPi)
+            .setDeleteIntent(deletePi)
+            .setWhen(System.currentTimeMillis())
+            .setShowWhen(true)
+            .setOngoing(false)
+            .setAutoCancel(false)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setDefaults(0)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_ERROR)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE);
+
+        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) nm.notify(NOTIFICATION_ID, b.build());
+    }
 }

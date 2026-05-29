@@ -44,14 +44,15 @@ public class WeatherSyncWorker extends Worker {
     /**
      * @param queryOverride If non-null, WeatherAPI is called with this `q` directly.
      */
-    public static void performSync(Context ctx, @Nullable String queryOverride) {
+    /** @return true if fresh weather was fetched and posted; false on any failure (and falls back to persisted text). */
+    public static boolean performSync(Context ctx, @Nullable String queryOverride) {
         SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String apiKey = prefs.getString(KEY_API, null);
         String query = !TextUtils.isEmpty(queryOverride) ? queryOverride : prefs.getString(KEY_QUERY, null);
         if (apiKey == null || apiKey.isEmpty() || query == null || query.isEmpty()) {
             Log.w(TAG, "performSync aborted: apiKey=" + (apiKey == null ? "null" : (apiKey.isEmpty() ? "empty" : "present")) +
                 " query=" + (query == null ? "null" : (query.isEmpty() ? "empty" : query)));
-            return;
+            return false;
         }
         Log.i(TAG, "performSync calling API with q=" + query);
 
@@ -67,7 +68,7 @@ public class WeatherSyncWorker extends Worker {
             if (root.has("error")) {
                 Log.w(TAG, "API error: " + json);
                 WeatherNotificationHelper.showPersistedIfAvailable(ctx);
-                return;
+                return false;
             }
 
             JSONObject loc = root.getJSONObject("location");
@@ -100,15 +101,21 @@ public class WeatherSyncWorker extends Worker {
 
             Log.i(TAG, "performSync posting notification title=" + title + " body=" + body);
             WeatherNotificationHelper.show(ctx, title, body);
+            // Clear the swipe-to-refresh spinner as soon as the fresh weather is posted, rather than
+            // waiting for alert scheduling below (which can take several seconds). This shrinks the
+            // window in which background-process death could strand the "Updating…" notification.
+            WeatherNotificationHelper.cancelUpdating(ctx);
             WeatherAlertNotifier.scheduleFromForecastRoot(ctx, root);
+            return true;
         } catch (Exception e) {
             Log.e(TAG, "Weather sync failed", e);
             WeatherNotificationHelper.showPersistedIfAvailable(ctx);
+            return false;
         }
     }
 
-    public static void performSync(Context ctx) {
-        performSync(ctx, null);
+    public static boolean performSync(Context ctx) {
+        return performSync(ctx, null);
     }
 
     @NonNull
@@ -117,6 +124,8 @@ public class WeatherSyncWorker extends Worker {
         Context app = getApplicationContext();
         boolean refreshLocation = getInputData().getBoolean(INPUT_REFRESH_LOCATION, false);
         Log.i(TAG, "doWork start refreshLocation=" + refreshLocation);
+        boolean ok = false;
+        boolean locationResolved = true;
         try {
             if (refreshLocation) {
                 String q = WeatherLocationHelper.resolveFreshLatLonQuery(app);
@@ -127,16 +136,26 @@ public class WeatherSyncWorker extends Worker {
                     // up-to-date even if the location is slightly stale; only fall back to showing
                     // unchanged persisted text if we don't have any stored coords either.
                     Log.w(TAG, "No fresh fix; calling API with last persisted query instead.");
-                    performSync(app);
+                    locationResolved = false;
+                    ok = performSync(app);
                 } else {
                     WeatherLocationHelper.persistQueryBlocking(app, q);
-                    performSync(app, q);
+                    ok = performSync(app, q);
                 }
             } else {
-                performSync(app);
+                ok = performSync(app);
             }
         } finally {
             WeatherNotificationHelper.cancelUpdating(app);
+            // A user-initiated swipe-refresh that produced no fresh weather should surface an error
+            // notification rather than leaving the user with nothing (or silently stale data).
+            if (refreshLocation && !ok) {
+                String body = locationResolved
+                    ? "Couldn't reach the weather service. Tap to open, or swipe to retry."
+                    : "Couldn't determine your location. Tap to open, or swipe to retry.";
+                Log.w(TAG, "swipe refresh failed; posting error notification (locationResolved=" + locationResolved + ")");
+                WeatherNotificationHelper.showError(app, "Weather update failed", body);
+            }
             Log.i(TAG, "doWork end");
         }
         return Result.success();

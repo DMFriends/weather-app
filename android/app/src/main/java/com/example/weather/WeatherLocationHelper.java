@@ -31,8 +31,12 @@ public final class WeatherLocationHelper {
     private static final String TAG = "WeatherLocationHelper";
     private static final String PREFS = "weather_native_notification";
     private static final String KEY_QUERY = "query_q";
-    private static final long CURRENT_LOC_TIMEOUT_MS = 10_000L;
-    private static final long SINGLE_UPDATE_TIMEOUT_MS = 10_000L;
+    // Kept short on purpose: this resolver runs sequentially across several providers, so a long
+    // per-provider timeout can block the WorkManager job (and keep the "Updating…" notification
+    // alive) for tens of seconds, widening the window for background-process death to strand it.
+    // A fresh fix that takes longer than this falls back to the best last-known location.
+    private static final long CURRENT_LOC_TIMEOUT_MS = 4_000L;
+    private static final long SINGLE_UPDATE_TIMEOUT_MS = 4_000L;
 
     private WeatherLocationHelper() {}
 
