@@ -895,11 +895,11 @@
             </button>
             <button
               type="button"
-              class="favorite-toggle {isLatLonFavorite(s.lat, s.lon) ? 'is-favorite' : ''}"
-              aria-label="{isLatLonFavorite(s.lat, s.lon) ? 'Remove' : 'Add'} {s.name} {isLatLonFavorite(s.lat, s.lon) ? 'from' : 'to'} favorites"
+              class="favorite-toggle {isLatLonFavorite(s.lat, s.lon, s.name) ? 'is-favorite' : ''}"
+              aria-label="{isLatLonFavorite(s.lat, s.lon, s.name) ? 'Remove' : 'Add'} {s.name} {isLatLonFavorite(s.lat, s.lon, s.name) ? 'from' : 'to'} favorites"
               onclick={(e) => toggleFavoriteForSuggestion(s, e)}
             >
-              {isLatLonFavorite(s.lat, s.lon) ? "★" : "☆"}
+              {isLatLonFavorite(s.lat, s.lon, s.name) ? "★" : "☆"}
             </button>
           </div>
         {/each}

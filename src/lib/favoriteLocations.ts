@@ -66,8 +66,19 @@ function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number)
 	return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
-/** Max distance (m) to treat geocoder vs API coordinates as the same place. */
-const MATCH_RADIUS_M = 15_000;
+/**
+ * Max distance (m) to treat geocoder vs API coordinates as the same place.
+ * This only reconciles small drift between a geocoder and the weather API for
+ * the *same* location, so it must stay tight enough not to swallow neighbouring
+ * towns (e.g. Salem and Swampscott, MA are only ~6 km apart).
+ */
+const MATCH_RADIUS_M = 1_500;
+
+/** City portion of a query/label, e.g. "Salem, Massachusetts, US" -> "salem". */
+function cityName(value: string | undefined): string {
+	if (!value) return "";
+	return normalizeQuery(value.split(",")[0] ?? value);
+}
 
 export function findMatchingFavorite(
 	items: FavoriteLocation[],
@@ -83,8 +94,15 @@ export function findMatchingFavorite(
 		if (byQuery) return byQuery;
 	}
 
+	// Proximity fallback: only accept a nearby favorite when its city name also
+	// agrees, so distinct neighbouring towns are never conflated. Without a name
+	// to verify against, distance alone is not trusted.
+	const targetName = cityName(opts.query);
+	if (!targetName) return undefined;
 	return items.find(
-		(f) => haversineMeters(f.lat, f.lon, opts.lat, opts.lon) <= MATCH_RADIUS_M
+		(f) =>
+			haversineMeters(f.lat, f.lon, opts.lat, opts.lon) <= MATCH_RADIUS_M &&
+			(cityName(f.query) === targetName || cityName(f.label) === targetName)
 	);
 }
 
