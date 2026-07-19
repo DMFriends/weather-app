@@ -60,7 +60,15 @@ export const WeatherNativeNotification = registerPlugin<{
 	cancelDisplay?: () => Promise<void>;
 	requestExactAlarms?: () => Promise<void>;
 	cancelWeatherAlertNotifications?: () => Promise<void>;
-	scheduleWeatherAlertsFromForecastJson?: (opts: { forecastJson: string }) => Promise<void>;
+	/**
+	 * `posted: false` means native stashed the alerts instead (refresh in flight, or app in the
+	 * foreground) and will release them itself once the user leaves the app.
+	 */
+	scheduleWeatherAlertsFromForecastJson?: (opts: {
+		forecastJson: string;
+	}) => Promise<{ posted?: boolean }>;
+	/** Records that /alerts was opened this session; suppresses alert notifications on app exit. */
+	markAlertsPageOpened?: () => Promise<void>;
 	consumePendingAlertKey?: () => Promise<{ key?: string }>;
 	clear: () => Promise<void>;
 	/** Updates stored F/C for {@link WeatherSyncWorker} without touching alarms or posting. */

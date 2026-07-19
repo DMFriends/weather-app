@@ -3,7 +3,7 @@
   import { page } from "$app/state";
   import { readForecastCache, writeForecastCache } from "$lib/weatherForecastCache";
   import { fetchWeatherForecast } from "$lib/weatherForecastApi";
-  import { syncAlertNotifications } from "$lib/weatherAlertNotifications";
+  import { setAlertsPageOpen, syncAlertNotifications } from "$lib/weatherAlertNotifications";
   import {
     getRelevantAlerts,
     sortAlertsByEffectiveDesc,
@@ -11,7 +11,7 @@
     type WeatherApiAlert,
     type WeatherApiResponse,
   } from "$lib/forecast";
-  import { onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
 
   let locationName = $state("");
   let alerts: WeatherApiAlert[] = $state([]);
@@ -54,7 +54,13 @@
       alerts = sortAlertsByEffectiveDesc(getRelevantAlerts(cached.response));
     }
     loaded = true;
+    // Reading alerts here suppresses the notification staged for this same set on app exit.
+    setAlertsPageOpen(true);
     void refreshForecastInBackground();
+  });
+
+  onDestroy(() => {
+    setAlertsPageOpen(false);
   });
 
   async function refreshForecastInBackground() {

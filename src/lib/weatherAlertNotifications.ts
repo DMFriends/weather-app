@@ -42,6 +42,54 @@ let lastPushedAlertsFingerprint: string | null = null;
 
 let alertExpiryRecheckTimer: ReturnType<typeof setTimeout> | undefined;
 
+/**
+ * Foreground gating. Posting an OS notification for alerts the user is looking at right now is
+ * noise, so while the app is active a changed alert set is staged here instead of pushed, and only
+ * announced once they leave the app (backgrounded — still being in "recents" counts as left).
+ */
+let appIsActive = true;
+let deferredAlerts: WeatherApiAlert[] = [];
+let deferredFingerprint: string | null = null;
+let deferredLocationKey: string | null = null;
+
+/** True while /alerts is mounted; reading the list in-app suppresses the matching staged push. */
+let alertsPageOpen = false;
+/** Fingerprint of the alert set the user actually read on /alerts, if any. */
+let viewedFingerprint: string | null = null;
+
+function clearDeferredAlertPush(): void {
+  deferredAlerts = [];
+  deferredFingerprint = null;
+  deferredLocationKey = null;
+}
+
+/**
+ * Announces whatever was staged while the app was in the foreground. Skips the push entirely if the
+ * user already read that exact alert set on /alerts — a later, genuinely different set still
+ * notifies, because the suppression is keyed by fingerprint rather than a sticky flag.
+ */
+async function flushDeferredAlertNotifications(): Promise<void> {
+  if (deferredFingerprint === null) return;
+
+  const fp = deferredFingerprint;
+  const locKey = deferredLocationKey;
+  const alerts = deferredAlerts;
+  clearDeferredAlertPush();
+
+  if (viewedFingerprint === fp) {
+    // Already seen in-app; record it as pushed so it isn't re-announced later.
+    lastPushedAlertsFingerprint = fp;
+    lastPushedAlertsLocationKey = locKey;
+    return;
+  }
+
+  const ok = await schedulePendingAlertNotifications(alerts);
+  if (ok) {
+    lastPushedAlertsFingerprint = fp;
+    lastPushedAlertsLocationKey = locKey;
+  }
+}
+
 function scheduleLocationKey(loc: { lat: number; lon: number } | null): string | null {
   if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lon)) return null;
   return `${loc.lat.toFixed(3)},${loc.lon.toFixed(3)}`;
@@ -106,15 +154,62 @@ async function pushAlertNotificationsIfNeeded(alerts: WeatherApiAlert[]): Promis
     return;
   }
 
+  // Whatever is on screen while /alerts is open counts as read.
+  if (alertsPageOpen) viewedFingerprint = fp;
+
+  // Stage rather than post while the user is in the app — e.g. they manually searched a location
+  // that happens to have active alerts, which they can already see. An empty set still falls
+  // through, so alerts that have expired are cleared from the shade right away instead of lingering.
+  //
+  // Android is excluded on purpose: there the call must reach native so it can stash the alerts and
+  // release them from MainActivity.onStop. Deferring here would mean native never receives them.
+  if (appIsActive && fp !== "[]" && Capacitor.getPlatform() !== "android") {
+    deferredAlerts = filterActiveAlerts(alerts ?? []);
+    deferredFingerprint = fp;
+    deferredLocationKey = locKey;
+    return;
+  }
+
   const ok = await schedulePendingAlertNotifications(filterActiveAlerts(alerts ?? []));
   if (ok) {
     lastPushedAlertsLocationKey = locKey;
     lastPushedAlertsFingerprint = fp;
+    clearDeferredAlertPush();
   }
 }
 
-export function setAlertNotificationsAppActive(_isActive: boolean): void {
-  void pushAlertNotificationsIfNeeded(lastAlertsSnapshot);
+export function setAlertNotificationsAppActive(isActive: boolean): void {
+  appIsActive = isActive;
+  if (isActive) {
+    // Re-evaluate on resume: clears alerts that expired while away, re-stages anything new.
+    void pushAlertNotificationsIfNeeded(lastAlertsSnapshot);
+    return;
+  }
+  // Android handles this natively (WeatherAlertNotifier stash + MainActivity.onStop). Anything
+  // scheduled here would be unreliable anyway: the WebView is paused on background, so an async
+  // flush awaiting a bridge round-trip may never complete.
+  if (Capacitor.getPlatform() === "android") return;
+  void flushDeferredAlertNotifications();
+}
+
+/**
+ * Called by /alerts on mount and teardown. Opening the page marks the current alert set as read, so
+ * leaving the app afterwards won't notify about alerts already reviewed there.
+ */
+export function setAlertsPageOpen(open: boolean): void {
+  alertsPageOpen = open;
+  if (!open) return;
+  viewedFingerprint = activeAlertsFingerprint(lastAlertsSnapshot);
+  // Android suppresses on exit natively — nothing staged this session is announced once the page
+  // has been opened, regardless of whether the alert set matches what was stashed.
+  if (Capacitor.getPlatform() !== "android") return;
+  void (async () => {
+    try {
+      await WeatherNativeNotification.markAlertsPageOpened?.();
+    } catch {
+      /* older APK without the method */
+    }
+  })();
 }
 
 function parseNotifiedJson(raw: string): NotifiedMap {
@@ -362,10 +457,13 @@ async function schedulePendingAlertNotifications(alerts: WeatherApiAlert[]): Pro
 
   if (Capacitor.getPlatform() === "android") {
     try {
-      await WeatherNativeNotification.scheduleWeatherAlertsFromForecastJson?.({
+      const res = await WeatherNativeNotification.scheduleWeatherAlertsFromForecastJson?.({
         forecastJson: buildForecastRootJsonForNative(alerts ?? [], lastAlertLocation),
       });
-      return true;
+      // `posted: false` means native stashed them (spinner up, or app in front) and will release
+      // them from MainActivity.onStop, so leave the pushed fingerprint unset. Older APKs resolve
+      // without the field — treat that as posted, matching their actual behaviour.
+      return res?.posted !== false;
     } catch (e) {
       console.warn("native weather alert schedule failed", e);
       return false;

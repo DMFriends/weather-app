@@ -25,6 +25,15 @@ public final class WeatherNotificationHelper {
     private static final String PREFS = "weather_native_notification";
     public static final String KEY_LAST_TITLE = "last_title";
     public static final String KEY_LAST_BODY = "last_body";
+    private static final String KEY_APP_FOREGROUND = "app_foreground";
+    private static final String KEY_APP_FOREGROUND_AT = "app_foreground_at";
+
+    /**
+     * How long a "foreground" mark stays trustworthy. {@link MainActivity#onPause} clears it on every
+     * normal exit, but a force-stop or crash never runs onPause and would otherwise leave the flag
+     * stuck true, silently suppressing alert notifications forever.
+     */
+    private static final long FOREGROUND_STALE_MS = 12L * 60 * 60 * 1000;
 
     private WeatherNotificationHelper() {}
 
@@ -144,14 +153,42 @@ public final class WeatherNotificationHelper {
         if (nm != null) nm.cancel(UPDATING_NOTIFICATION_ID);
     }
 
+    /** Recorded from {@link MainActivity}'s resume/pause so receivers and workers can read it. */
+    public static void setAppForeground(Context context, boolean foreground) {
+        Context app = context.getApplicationContext();
+        app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_APP_FOREGROUND, foreground)
+            .putLong(KEY_APP_FOREGROUND_AT, System.currentTimeMillis())
+            .apply();
+    }
+
+    /** True if the user currently has the app open in front of them. */
+    public static boolean isAppForeground(Context context) {
+        Context app = context.getApplicationContext();
+        SharedPreferences prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        if (!prefs.getBoolean(KEY_APP_FOREGROUND, false)) return false;
+        long markedAt = prefs.getLong(KEY_APP_FOREGROUND_AT, 0L);
+        return System.currentTimeMillis() - markedAt < FOREGROUND_STALE_MS;
+    }
+
     /** True if the ongoing weather notification is currently visible (untagged {@link #NOTIFICATION_ID}). */
     public static boolean isWeatherNotificationPosted(Context context) {
+        return isPosted(context, NOTIFICATION_ID);
+    }
+
+    /** True while a refresh is in flight, i.e. the "Updating…" spinner is on screen. */
+    public static boolean isUpdatingNotificationPosted(Context context) {
+        return isPosted(context, UPDATING_NOTIFICATION_ID);
+    }
+
+    private static boolean isPosted(Context context, int notificationId) {
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm == null) return false;
         String pkg = context.getPackageName();
         for (StatusBarNotification sbn : nm.getActiveNotifications()) {
             if (!pkg.equals(sbn.getPackageName())) continue;
-            if (sbn.getId() != NOTIFICATION_ID) continue;
+            if (sbn.getId() != notificationId) continue;
             if (sbn.getTag() != null) continue;
             return true;
         }

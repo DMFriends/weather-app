@@ -114,11 +114,23 @@ public class WeatherNativeNotificationPlugin extends Plugin {
         String json = call.getString("forecastJson", "{}");
         try {
             JSONObject root = new JSONObject(json);
-            WeatherAlertNotifier.scheduleFromForecastRoot(getContext().getApplicationContext(), root);
-            call.resolve();
+            boolean posted =
+                WeatherAlertNotifier.scheduleFromForecastRoot(getContext().getApplicationContext(), root);
+            JSObject ret = new JSObject();
+            // False when the alerts were stashed instead (refresh in flight, or app in foreground).
+            // Native releases them itself once the user leaves, so JS need not retry.
+            ret.put("posted", posted);
+            call.resolve(ret);
         } catch (JSONException e) {
             call.reject("Invalid forecast JSON for alerts", e);
         }
+    }
+
+    /** Records that /alerts was opened this session, suppressing alert notifications on app exit. */
+    @PluginMethod
+    public void markAlertsPageOpened(PluginCall call) {
+        WeatherAlertNotifier.markAlertsPageOpened(getContext().getApplicationContext());
+        call.resolve();
     }
 
     /** Hide the notification without wiping API key / query (used while reloading forecast). */

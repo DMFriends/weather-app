@@ -5,6 +5,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.os.Build;
 import android.text.TextUtils;
 import android.util.Log;
@@ -33,6 +34,10 @@ public final class WeatherAlertNotifier {
     private static final String TAG = "WeatherAlertNotifier";
 
     static final String CHANNEL_ID = "weather_alerts";
+
+    private static final String PREFS = "weather_native_notification";
+    private static final String KEY_PENDING_JSON = "pending_alerts_json";
+    private static final String KEY_ALERTS_PAGE_OPENED = "alerts_page_opened";
 
     private static final int ALERT_NOTIFICATION_ID_BASE = 80_000;
     private static final int ALERT_NOTIFICATION_ID_RANGE = 9_000;
@@ -74,13 +79,95 @@ public final class WeatherAlertNotifier {
     /**
      * Parses {@code alerts} from {@code forecast.json}: clears prior alert notifications in the app id
      * band, posts current non-expired alerts, persists dedup map for tap routing.
+     *
+     * <p>While the app is in the foreground the alerts are stashed instead of posted, and
+     * {@link #postPendingIfAny} releases them when the user leaves. That handoff lives here rather
+     * than in JS because Android pauses the WebView on background — a JS-side flush scheduled at
+     * that moment may simply never run.
+     *
+     * @return false if nothing was posted, so the caller leaves its "already pushed" bookkeeping
+     *     alone and retries later.
      */
-    public static void scheduleFromForecastRoot(Context context, JSONObject root) {
+    public static boolean scheduleFromForecastRoot(Context context, JSONObject root) {
+        // Don't stack alert notifications on top of the "Updating…" spinner. Dedup state and the
+        // currently posted alerts are deliberately left untouched so the next sync re-posts these.
+        if (WeatherNotificationHelper.isUpdatingNotificationPosted(context)) {
+            Log.i(TAG, "refresh in flight; stashing alerts for later");
+            stashPending(context, root);
+            return false;
+        }
+
+        // Enforced here as well as in JS: this also runs from a Worker/Receiver (e.g. swiping the
+        // weather notification while the app is open), which never passes through the JS gate.
+        if (WeatherNotificationHelper.isAppForeground(context)) {
+            Log.i(TAG, "app in foreground; stashing alerts until the user leaves");
+            stashPending(context, root);
+            return false;
+        }
         try {
             scheduleFromForecastRootInner(context, root);
+            clearPending(context);
+            return true;
         } catch (Exception e) {
             Log.e(TAG, "scheduleFromForecastRoot failed", e);
+            return false;
         }
+    }
+
+    private static void stashPending(Context context, JSONObject root) {
+        prefs(context).edit().putString(KEY_PENDING_JSON, root.toString()).apply();
+    }
+
+    private static void clearPending(Context context) {
+        prefs(context).edit().remove(KEY_PENDING_JSON).apply();
+    }
+
+    /**
+     * Records that the user opened /alerts during this foreground session. Reading the alerts in the
+     * app means nothing is announced on the way out — deliberately a plain session flag rather than
+     * a per-alert-set comparison, since the background sync worker stashes without any identifier
+     * and its view of an alert set can differ from the page's for the same underlying alerts.
+     */
+    public static void markAlertsPageOpened(Context context) {
+        prefs(context).edit().putBoolean(KEY_ALERTS_PAGE_OPENED, true).apply();
+    }
+
+    /** Starts a fresh foreground session; the user has not read anything in it yet. */
+    public static void clearAlertsPageOpened(Context context) {
+        prefs(context).edit().putBoolean(KEY_ALERTS_PAGE_OPENED, false).apply();
+    }
+
+    /**
+     * Posts anything stashed while the app was in front. Called from {@link MainActivity#onStop},
+     * i.e. once the app is genuinely no longer visible.
+     */
+    public static void postPendingIfAny(Context context) {
+        Context app = context.getApplicationContext();
+        SharedPreferences prefs = prefs(app);
+
+        boolean readInApp = prefs.getBoolean(KEY_ALERTS_PAGE_OPENED, false);
+        // Consumed here rather than only on the next onStart, so this suppresses just this exit —
+        // alerts a later background sync turns up while the app stays closed still notify.
+        clearAlertsPageOpened(app);
+
+        String json = prefs.getString(KEY_PENDING_JSON, null);
+        if (json == null || json.isEmpty()) return;
+        clearPending(app);
+
+        if (readInApp) {
+            Log.i(TAG, "user opened /alerts this session; not notifying on exit");
+            return;
+        }
+
+        try {
+            scheduleFromForecastRootInner(app, new JSONObject(json));
+        } catch (Exception e) {
+            Log.e(TAG, "postPendingIfAny failed", e);
+        }
+    }
+
+    private static SharedPreferences prefs(Context context) {
+        return context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
     private static void scheduleFromForecastRootInner(Context context, JSONObject root) throws JSONException {
