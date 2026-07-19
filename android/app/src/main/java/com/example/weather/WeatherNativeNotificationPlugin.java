@@ -62,6 +62,11 @@ public class WeatherNativeNotificationPlugin extends Plugin {
         WeatherAlarmScheduler.cancel(ctx);
         WorkManager.getInstance(ctx).cancelUniqueWork(WeatherSyncWorker.UNIQUE_PERIODIC);
 
+        // The app is in front with fresh data, so any spinner still up is from a refresh that never
+        // settled — drop it and its backstop rather than letting them race this update.
+        WeatherNotificationHelper.cancelUpdating(ctx);
+        WorkManager.getInstance(ctx).cancelUniqueWork(WeatherRefreshWatchdogWorker.UNIQUE_WATCHDOG);
+
         if (hasDisplay) {
             WeatherNotificationHelper.show(ctx, title, body);
         }

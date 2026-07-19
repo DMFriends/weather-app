@@ -8,6 +8,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
+import android.service.notification.StatusBarNotification;
 
 import androidx.core.app.NotificationCompat;
 
@@ -105,6 +106,16 @@ public final class WeatherNotificationHelper {
         if (nm != null) nm.cancel(NOTIFICATION_ID);
     }
 
+    /**
+     * Upper bound on how long "Updating\u2026" may stay on screen. {@link WeatherSyncWorker} cancels it
+     * as soon as the refresh settles, but that cleanup is lost if the process is killed mid-refresh
+     * or the job never gets scheduled (Doze, app standby, OEM battery killers) \u2014 which used to strand
+     * the spinner indefinitely. {@code setTimeoutAfter} makes the platform itself retire it, so the
+     * bound holds even if none of our code runs again. Comfortably exceeds the worst-case refresh
+     * (~20s resolving location + 2 x {@link WeatherSyncWorker} HTTP timeouts).
+     */
+    private static final long UPDATING_TIMEOUT_MS = 75_000L;
+
     /** Posts a transient indeterminate-progress notification while a refresh is in flight. */
     public static void showUpdating(Context context) {
         ensureChannel(context);
@@ -113,7 +124,10 @@ public final class WeatherNotificationHelper {
             .setContentText("Fetching latest conditions for your location")
             .setSmallIcon(R.drawable.ic_stat_weather_rain)
             .setProgress(0, 0, true)
-            .setOngoing(true)
+            .setTimeoutAfter(UPDATING_TIMEOUT_MS)
+            // Dismissible on purpose: if a refresh does wedge, the user can swipe the spinner away
+            // instead of waiting it out. It carries no delete intent, so that swipe is inert.
+            .setOngoing(false)
             .setOnlyAlertOnce(true)
             .setSilent(true)
             .setDefaults(0)
@@ -128,6 +142,20 @@ public final class WeatherNotificationHelper {
     public static void cancelUpdating(Context context) {
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm != null) nm.cancel(UPDATING_NOTIFICATION_ID);
+    }
+
+    /** True if the ongoing weather notification is currently visible (untagged {@link #NOTIFICATION_ID}). */
+    public static boolean isWeatherNotificationPosted(Context context) {
+        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) return false;
+        String pkg = context.getPackageName();
+        for (StatusBarNotification sbn : nm.getActiveNotifications()) {
+            if (!pkg.equals(sbn.getPackageName())) continue;
+            if (sbn.getId() != NOTIFICATION_ID) continue;
+            if (sbn.getTag() != null) continue;
+            return true;
+        }
+        return false;
     }
 
     /**

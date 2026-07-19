@@ -7,6 +7,7 @@ import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.work.WorkManager;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
@@ -147,6 +148,8 @@ public class WeatherSyncWorker extends Worker {
             }
         } finally {
             WeatherNotificationHelper.cancelUpdating(app);
+            // Refresh settled (success or handled failure) — the stuck-refresh backstop isn't needed.
+            WorkManager.getInstance(app).cancelUniqueWork(WeatherRefreshWatchdogWorker.UNIQUE_WATCHDOG);
             // A user-initiated swipe-refresh that produced no fresh weather should surface an error
             // notification rather than leaving the user with nothing (or silently stale data).
             if (refreshLocation && !ok) {
@@ -191,8 +194,10 @@ public class WeatherSyncWorker extends Worker {
 
     private static String httpGet(String urlStr) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) URI.create(urlStr).toURL().openConnection();
-        conn.setConnectTimeout(20000);
-        conn.setReadTimeout(20000);
+        // Kept tight so the worst-case refresh (location resolution + connect + read) stays inside
+        // the "Updating…" notification's own timeout rather than outliving the spinner.
+        conn.setConnectTimeout(12000);
+        conn.setReadTimeout(12000);
         conn.setRequestMethod("GET");
         conn.setRequestProperty("Accept", "application/json");
         conn.setRequestProperty("User-Agent", "weather-app/2.0 (github.com/DMFriends/weather-app)");

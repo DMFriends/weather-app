@@ -14,6 +14,8 @@ import androidx.work.ExistingWorkPolicy;
 import androidx.work.OneTimeWorkRequest;
 import androidx.work.WorkManager;
 
+import java.util.concurrent.TimeUnit;
+
 /**
  * When the user dismisses the weather notification, kick off a WorkManager job that resolves the
  * current device location and refreshes the notification from WeatherAPI. The receiver itself stays
@@ -33,6 +35,9 @@ import androidx.work.WorkManager;
 public class WeatherDismissReceiver extends BroadcastReceiver {
 
     private static final String TAG = "WeatherDismissReceiver";
+
+    /** Fires just after the "Updating…" notification's own timeout, so it only sees genuinely stuck refreshes. */
+    private static final long WATCHDOG_DELAY_SECONDS = 90L;
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -67,6 +72,17 @@ public class WeatherDismissReceiver extends BroadcastReceiver {
             WeatherSyncWorker.UNIQUE_DISMISS_REFRESH,
             ExistingWorkPolicy.REPLACE,
             refresh
+        );
+
+        // Backstop in case the refresh above never completes (process killed, job never scheduled).
+        // WeatherSyncWorker cancels this as soon as it settles either way.
+        OneTimeWorkRequest watchdog = new OneTimeWorkRequest.Builder(WeatherRefreshWatchdogWorker.class)
+            .setInitialDelay(WATCHDOG_DELAY_SECONDS, TimeUnit.SECONDS)
+            .build();
+        WorkManager.getInstance(app).enqueueUniqueWork(
+            WeatherRefreshWatchdogWorker.UNIQUE_WATCHDOG,
+            ExistingWorkPolicy.REPLACE,
+            watchdog
         );
     }
 
