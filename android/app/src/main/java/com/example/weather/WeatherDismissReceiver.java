@@ -1,10 +1,13 @@
 package com.example.weather;
 
+import android.app.KeyguardManager;
 import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.os.PowerManager;
 import android.service.notification.StatusBarNotification;
+import android.util.Log;
 
 import androidx.work.Data;
 import androidx.work.ExistingWorkPolicy;
@@ -19,8 +22,17 @@ import androidx.work.WorkManager;
  * <p>Guards against stray broadcasts: dismissing another notification (e.g. a weather alert) can
  * still deliver this {@link android.app.PendingIntent} when intents collide. If the ongoing
  * weather notification is still posted for this package, we skip the refresh.
+ *
+ * <p>Also guards against dismissals the user did not perform on this device. Since Android 14,
+ * {@code setOngoing(true)} no longer exempts a notification from being swiped or swept up by
+ * "Clear all", so this delete intent can fire from a paired watch, Android Auto, or an OEM
+ * battery/cleaner routine — typically while the screen is off or the device is locked. A deliberate
+ * swipe effectively always happens with the screen on and unlocked, so anything else is treated as
+ * spurious: the notification is silently restored from cache and no refresh is run.
  */
 public class WeatherDismissReceiver extends BroadcastReceiver {
+
+    private static final String TAG = "WeatherDismissReceiver";
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -28,6 +40,14 @@ public class WeatherDismissReceiver extends BroadcastReceiver {
 
         NotificationManager nm = (NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm != null && isOngoingWeatherNotificationStillPosted(nm, app.getPackageName())) {
+            return;
+        }
+
+        if (!isUserPresent(app)) {
+            // Not a swipe the user made here: put the notification back with cached text and skip
+            // the location + network refresh entirely.
+            Log.i(TAG, "dismiss while screen off/locked; treating as spurious, restoring notification");
+            WeatherNotificationHelper.showPersistedIfAvailable(app);
             return;
         }
 
@@ -48,6 +68,21 @@ public class WeatherDismissReceiver extends BroadcastReceiver {
             ExistingWorkPolicy.REPLACE,
             refresh
         );
+    }
+
+    /**
+     * True if the user could plausibly have just swiped the notification themselves: screen on and
+     * device unlocked. Dismissals propagated from a paired watch, or issued by a cleaner routine,
+     * usually arrive with the screen off or the keyguard up.
+     */
+    private static boolean isUserPresent(Context app) {
+        PowerManager pm = (PowerManager) app.getSystemService(Context.POWER_SERVICE);
+        if (pm != null && !pm.isInteractive()) return false;
+
+        KeyguardManager km = (KeyguardManager) app.getSystemService(Context.KEYGUARD_SERVICE);
+        if (km != null && km.isKeyguardLocked()) return false;
+
+        return true;
     }
 
     /** True if our foreground weather notification is still visible (user did not dismiss it). */
