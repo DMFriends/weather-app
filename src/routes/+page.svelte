@@ -999,6 +999,7 @@
         </button>
       </div>
       <p>🌡️ {formatTempPrecise(data.current.temp_f, tempUnit)}</p>
+      <p>🌡️ High: {formatTempPrecise(data.forecast.forecastday[0].day.maxtemp_f, tempUnit)} / Low: {formatTempPrecise(data.forecast.forecastday[0].day.mintemp_f, tempUnit)}</p>
       <p>
         💨 {formatWindSpeed(data.current.wind_mph, tempUnit)} {data.current.wind_dir} ({Math.round(
           data.current.wind_degree
